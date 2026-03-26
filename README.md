@@ -93,6 +93,27 @@ Then update `.env.multi.test` so `MAILBOXES_CONFIG_PATH=config/mailboxes.local.j
 - `DRY_RUN=true` is a simulation mode: no IMAP mutation, no terminal SQLite state, no draft files
 - cleanup candidate selection now targets only explicit `cleanup_pending` records; legacy cleanup heuristics are no longer part of the main runtime path
 
+## Operational assumptions
+
+- `INBOX.AI-Review` should be treated as a worker-owned source folder during live pilot.
+- Do not leave unrelated `\Deleted` messages in the source folder.
+- Do not run multiple workers or manual IMAP cleanup flows against the same source folder at the same time.
+- `IMAP_SEARCH_CRITERION=UNSEEN` is the recommended pilot setting. `ALL` is supported, but paired with a low `IMAP_FETCH_LIMIT` it can hide backlog behavior.
+
+## Operational commands
+
+Compact status:
+
+```bash
+.venv/bin/python -m mail_ai_agent.status_cli --state-db data/state.sqlite --audit-log logs/audit.jsonl
+```
+
+Full structured report:
+
+```bash
+.venv/bin/python -m mail_ai_agent.report_cli --state-db data/state.sqlite --audit-log logs/audit.jsonl
+```
+
 Manual cleanup preview:
 
 ```bash
