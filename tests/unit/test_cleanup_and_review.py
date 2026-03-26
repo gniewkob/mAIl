@@ -7,7 +7,7 @@ from mail_ai_agent.review_report import build_review_rows, export_review_csv, su
 from mail_ai_agent.state_manager import MOVE_CLEANUP_PENDING_ACTION, StateManager
 
 
-def test_state_manager_lists_cleanup_candidates(tmp_path: Path) -> None:
+def test_state_manager_lists_cleanup_candidates_for_cleanup_pending_records(tmp_path: Path) -> None:
     manager = StateManager(tmp_path / "state.sqlite")
     acquired = manager.acquire_lease(
         mailbox_id="inbox_a",
@@ -23,12 +23,13 @@ def test_state_manager_lists_cleanup_candidates(tmp_path: Path) -> None:
         max_retries=3,
     )
     assert acquired.record is not None
-    manager.mark_processed(
+    manager.mark_move_cleanup_pending(
         acquired.record.id,
         category="question",
         confidence=0.9,
         target_folder="INBOX.Questions",
-        action_taken="route_from_llm",
+        error_message="delete failed",
+        error_type="RuntimeError",
     )
 
     candidates = manager.list_cleanup_candidates(mailbox_id="inbox_a", source_folder="INBOX.AI-Review")

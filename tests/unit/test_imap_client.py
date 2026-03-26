@@ -113,3 +113,29 @@ def test_fetch_candidates_uses_search_criterion_and_limit(monkeypatch) -> None:
     assert [candidate.uid for candidate in candidates] == ["41", "42"]
     assert all(candidate.uidvalidity == "999" for candidate in candidates)
     assert [args[0] for args in connection.fetch_args] == [b"41", b"42"]
+
+
+def test_fetch_candidates_uses_shell_like_tokenization_for_search_criterion(monkeypatch) -> None:
+    mailbox = make_mailbox().model_copy(update={"imap_search_criterion": 'TEXT "hello world"'})
+    connection = FakeFlakyConnection()
+
+    monkeypatch.setattr("mail_ai_agent.imap_client.imaplib.IMAP4_SSL", lambda *_: connection)
+    monkeypatch.setattr("mail_ai_agent.imap_client.time.sleep", lambda _: None)
+
+    with IMAPClient(mailbox) as client:
+        client.fetch_candidates("INBOX.AI-Review")
+
+    assert connection.search_args == (None, "TEXT", "hello world")
+
+
+def test_get_uidvalidity_reads_folder_metadata(monkeypatch) -> None:
+    mailbox = make_mailbox()
+    connection = FakeFlakyConnection()
+
+    monkeypatch.setattr("mail_ai_agent.imap_client.imaplib.IMAP4_SSL", lambda *_: connection)
+    monkeypatch.setattr("mail_ai_agent.imap_client.time.sleep", lambda _: None)
+
+    with IMAPClient(mailbox) as client:
+        uidvalidity = client.get_uidvalidity("INBOX.AI-Review")
+
+    assert uidvalidity == "999"

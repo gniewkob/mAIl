@@ -374,23 +374,13 @@ class StateManager:
                 WHERE mailbox_id = ?
                   AND source_folder = ?
                   AND target_folder IS NOT NULL
-                  AND (
-                        status = ?
-                        OR (
-                            status = ?
-                            AND action_taken != ?
-                            AND action_taken NOT LIKE ?
-                        )
-                  )
+                  AND status = ?
                 ORDER BY id
                 """,
                 (
                     mailbox_id,
                     source_folder,
                     WorkflowStatus.CLEANUP_PENDING.value,
-                    WorkflowStatus.PROCESSED.value,
-                    "cleanup_source",
-                    "move_%",
                 ),
             ).fetchall()
         return [self._row_to_record(row) for row in rows]

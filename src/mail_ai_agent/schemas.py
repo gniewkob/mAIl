@@ -158,6 +158,9 @@ class MailboxProcessingReport(BaseModel):
     uncertain: int = 0
     simulated: int = 0
     cleanup_pending: int = 0
+    cleanup_pass_processed: int = 0
+    cleanup_pass_failed: int = 0
+    cleanup_uidvalidity_mismatch: int = 0
     failed: int = 0
     skipped: int = 0
     conflicts: int = 0
@@ -172,6 +175,9 @@ class ProcessingReport(BaseModel):
     uncertain: int = 0
     simulated: int = 0
     cleanup_pending: int = 0
+    cleanup_pass_processed: int = 0
+    cleanup_pass_failed: int = 0
+    cleanup_uidvalidity_mismatch: int = 0
     failed: int = 0
     skipped: int = 0
     conflicts: int = 0

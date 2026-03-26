@@ -21,6 +21,8 @@ def test_audit_reporting_summary_and_csv(tmp_path: Path) -> None:
                 json.dumps({"mailbox_id": "inbox_a", "action_taken": "route_from_llm", "status_after": "processed", "category": "question"}),
                 json.dumps({"mailbox_id": "inbox_b", "action_taken": MOVE_CLEANUP_PENDING_ACTION, "status_after": "cleanup_pending", "error": "boom"}),
                 json.dumps({"mailbox_id": "inbox_c", "action_taken": "simulate_route_from_llm", "status_after": "simulated", "category": "question"}),
+                json.dumps({"mailbox_id": "inbox_d", "action_taken": "cleanup_source", "status_after": "processed"}),
+                json.dumps({"mailbox_id": "inbox_e", "action_taken": "cleanup_uidvalidity_mismatch", "status_after": "cleanup_pending", "error": "mismatch"}),
             ]
         ),
         encoding="utf-8",
@@ -31,12 +33,14 @@ def test_audit_reporting_summary_and_csv(tmp_path: Path) -> None:
     csv_path = tmp_path / "audit.csv"
     export_audit_csv(records, csv_path)
 
-    assert summary["records"] == 3
+    assert summary["records"] == 5
     assert summary["actions"][MOVE_CLEANUP_PENDING_ACTION] == 1
-    assert summary["statuses"]["processed"] == 1
+    assert summary["statuses"]["processed"] == 2
     assert summary["mailboxes"]["inbox_a"] == 1
     assert summary["cleanup_pending"] == 1
     assert summary["simulated"] == 1
+    assert summary["cleanup_pass_processed"] == 1
+    assert summary["cleanup_uidvalidity_mismatch"] == 1
     assert csv_path.exists()
 
 

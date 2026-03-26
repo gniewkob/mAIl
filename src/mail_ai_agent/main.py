@@ -62,6 +62,9 @@ def process_mailboxes(settings: Settings) -> ProcessingReport:
             report.uncertain += mailbox_report.uncertain
             report.simulated += mailbox_report.simulated
             report.cleanup_pending += mailbox_report.cleanup_pending
+            report.cleanup_pass_processed += mailbox_report.cleanup_pass_processed
+            report.cleanup_pass_failed += mailbox_report.cleanup_pass_failed
+            report.cleanup_uidvalidity_mismatch += mailbox_report.cleanup_uidvalidity_mismatch
             report.failed += mailbox_report.failed
             report.skipped += mailbox_report.skipped
             report.conflicts += mailbox_report.conflicts
@@ -86,19 +89,52 @@ def _run_cleanup_pass(
     state: StateManager,
     audit: AuditLogger,
     imap: IMAPClient,
-) -> int:
+) -> tuple[int, int, int]:
     candidates = state.list_cleanup_candidates(mailbox_id=mailbox.mailbox_id, source_folder=mailbox.imap_source_folder)
     if not candidates:
-        return 0
+        return 0, 0, 0
 
+    current_uidvalidity = imap.get_uidvalidity(mailbox.imap_source_folder)
     cleaned_records: list[tuple[int, str | None, str | None, str | None, str | None, str | None]] = []
+    failed_count = 0
+    mismatch_count = 0
     for record in candidates:
         if not record.imap_uid:
+            continue
+        if record.uidvalidity and current_uidvalidity and record.uidvalidity != current_uidvalidity:
+            mismatch_count += 1
+            audit.log(
+                level="WARNING",
+                mailbox_id=mailbox.mailbox_id,
+                mailbox_user=mailbox.imap_user,
+                source_folder=mailbox.imap_source_folder,
+                message_id=record.message_id,
+                fingerprint=record.fingerprint,
+                imap_uid=record.imap_uid,
+                sender=record.sender,
+                subject=record.subject,
+                status_before=WorkflowStatus.CLEANUP_PENDING.value,
+                status_after=WorkflowStatus.CLEANUP_PENDING.value,
+                category=record.category,
+                confidence=record.confidence,
+                action_taken="cleanup_uidvalidity_mismatch",
+                target_folder=record.target_folder,
+                draft_path=record.draft_path,
+                error=f"stored uidvalidity={record.uidvalidity}, current uidvalidity={current_uidvalidity}",
+                dry_run=False,
+            )
+            LOGGER.warning(
+                "Skipping cleanup due to UIDVALIDITY mismatch for mailbox %s: stored=%s current=%s",
+                mailbox.mailbox_id,
+                record.uidvalidity,
+                current_uidvalidity,
+            )
             continue
         try:
             imap.mark_deleted(mailbox.imap_source_folder, record.imap_uid)
             cleaned_records.append((record.id, record.message_id, record.fingerprint, record.sender, record.subject, record.target_folder))
         except Exception as exc:
+            failed_count += 1
             audit.log(
                 level="ERROR",
                 mailbox_id=mailbox.mailbox_id,
@@ -121,6 +157,8 @@ def _run_cleanup_pass(
             )
             LOGGER.exception("Cleanup pass failed for mailbox %s", mailbox.mailbox_id)
     if cleaned_records:
+        # EXPUNGE operates on the whole selected folder. This is acceptable here only because
+        # the worker is expected to own the source folder lifecycle for cleanup-pending records.
         imap.expunge(mailbox.imap_source_folder)
         for record_id, message_id, fingerprint, sender, subject, target_folder in cleaned_records:
             state.mark_cleanup_done(record_id)
@@ -140,7 +178,7 @@ def _run_cleanup_pass(
                 error=None,
                 dry_run=False,
             )
-    return len(cleaned_records)
+    return len(cleaned_records), failed_count, mismatch_count
 
 
 def _process_mailbox(
@@ -155,7 +193,15 @@ def _process_mailbox(
     report = MailboxProcessingReport(mailbox_id=mailbox.mailbox_id, mailbox_user=mailbox.imap_user)
     with IMAPClient(mailbox) as imap:
         if not settings.dry_run:
-            _run_cleanup_pass(mailbox=mailbox, state=state, audit=audit, imap=imap)
+            cleanup_processed, cleanup_failed, cleanup_mismatch = _run_cleanup_pass(
+                mailbox=mailbox,
+                state=state,
+                audit=audit,
+                imap=imap,
+            )
+            report.cleanup_pass_processed += cleanup_processed
+            report.cleanup_pass_failed += cleanup_failed
+            report.cleanup_uidvalidity_mismatch += cleanup_mismatch
         candidates = imap.fetch_candidates(mailbox.imap_source_folder)
         report.candidates_seen = len(candidates)
         for candidate in candidates:

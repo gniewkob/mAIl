@@ -40,6 +40,8 @@ def summarize_audit_records(records: list[dict[str, Any]]) -> dict[str, Any]:
         "errors": len(errors),
         "cleanup_pending": cleanup_pending,
         "simulated": status_counts.get("simulated", 0),
+        "cleanup_pass_processed": action_counts.get("cleanup_source", 0),
+        "cleanup_uidvalidity_mismatch": action_counts.get("cleanup_uidvalidity_mismatch", 0),
     }
 
 

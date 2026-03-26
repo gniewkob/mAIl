@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import imaplib
+import shlex
 import time
 from contextlib import AbstractContextManager
 from typing import Callable, TypeVar
@@ -68,6 +69,16 @@ class IMAPClient(AbstractContextManager["IMAPClient"]):
             return value
         return None
 
+    def get_uidvalidity(self, folder: str) -> str | None:
+        def _get() -> str | None:
+            assert self.connection is not None
+            status, _ = self.connection.select(folder, readonly=True)
+            if status != "OK":
+                raise RuntimeError(f"Unable to select folder {folder}")
+            return self._get_uidvalidity()
+
+        return self._run_with_retry("get_uidvalidity", _get)
+
     def fetch_candidates(self, folder: str) -> list[CandidateMessage]:
         def _fetch() -> list[CandidateMessage]:
             assert self.connection is not None
@@ -75,7 +86,7 @@ class IMAPClient(AbstractContextManager["IMAPClient"]):
             if status != "OK":
                 raise RuntimeError(f"Unable to select folder {folder}")
             uidvalidity = self._get_uidvalidity()
-            search_tokens = self.mailbox.imap_search_criterion.split()
+            search_tokens = shlex.split(self.mailbox.imap_search_criterion)
             status, data = self.connection.uid("search", None, *search_tokens)
             if status != "OK":
                 raise RuntimeError("Unable to search folder")
