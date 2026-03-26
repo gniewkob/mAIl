@@ -159,7 +159,29 @@ def _run_cleanup_pass(
     if cleaned_records:
         # EXPUNGE operates on the whole selected folder. This is acceptable here only because
         # the worker is expected to own the source folder lifecycle for cleanup-pending records.
-        imap.expunge(mailbox.imap_source_folder)
+        try:
+            imap.expunge(mailbox.imap_source_folder)
+        except Exception as exc:
+            failed_count += len(cleaned_records)
+            for _, message_id, fingerprint, sender, subject, target_folder in cleaned_records:
+                audit.log(
+                    level="ERROR",
+                    mailbox_id=mailbox.mailbox_id,
+                    mailbox_user=mailbox.imap_user,
+                    source_folder=mailbox.imap_source_folder,
+                    message_id=message_id,
+                    fingerprint=fingerprint,
+                    sender=sender,
+                    subject=subject,
+                    status_before=WorkflowStatus.CLEANUP_PENDING.value,
+                    status_after=WorkflowStatus.CLEANUP_PENDING.value,
+                    action_taken="cleanup_expunge_failed",
+                    target_folder=target_folder,
+                    error=str(exc),
+                    dry_run=False,
+                )
+            LOGGER.exception("Cleanup expunge failed for mailbox %s", mailbox.mailbox_id)
+            return 0, failed_count, mismatch_count
         for record_id, message_id, fingerprint, sender, subject, target_folder in cleaned_records:
             state.mark_cleanup_done(record_id)
             audit.log(

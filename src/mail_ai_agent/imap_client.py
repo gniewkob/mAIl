@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import imaplib
-import shlex
 import time
 from contextlib import AbstractContextManager
 from typing import Callable, TypeVar
@@ -86,7 +85,8 @@ class IMAPClient(AbstractContextManager["IMAPClient"]):
             if status != "OK":
                 raise RuntimeError(f"Unable to select folder {folder}")
             uidvalidity = self._get_uidvalidity()
-            search_tokens = shlex.split(self.mailbox.imap_search_criterion)
+            # The criterion is validated in config.py against a safe token whitelist.
+            search_tokens = self.mailbox.imap_search_criterion.split()
             status, data = self.connection.uid("search", None, *search_tokens)
             if status != "OK":
                 raise RuntimeError("Unable to search folder")

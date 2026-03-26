@@ -105,6 +105,16 @@ class FakeUidValidityMismatchIMAPClient(FakeIMAPClient):
         return "1000"
 
 
+class FakeExpungeFailingCleanupPassIMAPClient(FakeIMAPClient):
+    expunge_calls: int = 0
+
+    def expunge(self, folder: str) -> None:
+        self.expunged.append(folder)
+        type(self).expunge_calls += 1
+        if type(self).expunge_calls == 1:
+            raise RuntimeError("expunge failed")
+
+
 class FakeEndToEndIMAPClient(FakeIMAPClient):
     def fetch_candidates(self, folder: str) -> list[CandidateMessage]:
         complaint = EmailMessage()
@@ -358,6 +368,63 @@ def test_process_inbox_skips_cleanup_when_uidvalidity_mismatches(monkeypatch, tm
     audit_lines = [json.loads(line) for line in (tmp_path / "audit.jsonl").read_text(encoding="utf-8").splitlines()]
     mismatch_entries = [line for line in audit_lines if line.get("action_taken") == "cleanup_uidvalidity_mismatch"]
     assert len(mismatch_entries) == 1
+
+
+def test_process_inbox_keeps_cleanup_pending_when_cleanup_expunge_fails(monkeypatch, tmp_path: Path) -> None:
+    from mail_ai_agent.main import process_inbox
+
+    manager = StateManager(tmp_path / "state.sqlite")
+    acquired = manager.acquire_lease(
+        mailbox_id="user_example_com",
+        message_id="cleanup-msg@example.com",
+        fingerprint="cleanup-fp",
+        content_fingerprint="cleanup-content-fp",
+        imap_uid="40",
+        uidvalidity="999",
+        sender="old@example.com",
+        subject="Stare cleanup pending",
+        source_folder="INBOX.AI-Review",
+        internaldate=None,
+        worker_id="worker-1",
+        lease_seconds=60,
+        max_retries=3,
+    )
+    assert acquired.record is not None
+    manager.mark_move_cleanup_pending(
+        acquired.record.id,
+        category="question",
+        confidence=0.7,
+        target_folder="INBOX.Questions",
+        error_message="delete failed",
+        error_type="RuntimeError",
+    )
+
+    FakeExpungeFailingCleanupPassIMAPClient.copied = []
+    FakeExpungeFailingCleanupPassIMAPClient.flagged = []
+    FakeExpungeFailingCleanupPassIMAPClient.deleted = []
+    FakeExpungeFailingCleanupPassIMAPClient.expunged = []
+    FakeExpungeFailingCleanupPassIMAPClient.expunge_calls = 0
+    monkeypatch.setattr("mail_ai_agent.main.IMAPClient", FakeExpungeFailingCleanupPassIMAPClient)
+    monkeypatch.setattr("mail_ai_agent.main.LLMGateway", FakeLLMGateway)
+    settings = make_settings(tmp_path).model_copy(update={"dry_run": False})
+
+    report = process_inbox(settings)
+
+    assert report.processed == 1
+    assert report.cleanup_pass_processed == 0
+    assert report.cleanup_pass_failed == 1
+    assert report.cleanup_uidvalidity_mismatch == 0
+    assert FakeExpungeFailingCleanupPassIMAPClient.deleted == [("INBOX.AI-Review", "40"), ("INBOX.AI-Review", "42")]
+    assert FakeExpungeFailingCleanupPassIMAPClient.expunged == ["INBOX.AI-Review", "INBOX.AI-Review"]
+
+    still_pending = manager.get_by_message_id(settings.default_mailbox_id(), "cleanup-msg@example.com")
+    assert still_pending is not None
+    assert still_pending.status.value == "cleanup_pending"
+    assert still_pending.action_taken == MOVE_CLEANUP_PENDING_ACTION
+
+    audit_lines = [json.loads(line) for line in (tmp_path / "audit.jsonl").read_text(encoding="utf-8").splitlines()]
+    expunge_entries = [line for line in audit_lines if line.get("action_taken") == "cleanup_expunge_failed"]
+    assert len(expunge_entries) == 1
 
 
 def test_process_inbox_end_to_end_persists_rule_and_llm_outputs(monkeypatch, tmp_path: Path) -> None:
