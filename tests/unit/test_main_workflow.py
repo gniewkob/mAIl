@@ -43,7 +43,7 @@ class FakeIMAPClient:
         message["Subject"] = "Pytanie o cenę"
         message["Message-ID"] = "<test-1@example.com>"
         message.set_content("Jaka jest cena usługi manicure?")
-        return [CandidateMessage(uid="42", internaldate=None, raw_bytes=message.as_bytes())]
+        return [CandidateMessage(uid="42", uidvalidity="999", internaldate=None, raw_bytes=message.as_bytes())]
 
     def copy_message(self, source_folder: str, uid: str, target_folder: str) -> None:
         self.copied.append((source_folder, uid, target_folder))
@@ -76,7 +76,7 @@ class FakeMultiMailboxIMAPClient:
         message["Subject"] = f"Pytanie {self.mailbox.mailbox_id}"
         message["Message-ID"] = f"<{self.mailbox.mailbox_id}@example.com>"
         message.set_content("Jaka jest cena usługi manicure?")
-        return [CandidateMessage(uid=self.mailbox.mailbox_id, internaldate=None, raw_bytes=message.as_bytes())]
+        return [CandidateMessage(uid=self.mailbox.mailbox_id, uidvalidity="999", internaldate=None, raw_bytes=message.as_bytes())]
 
     def copy_message(self, source_folder: str, uid: str, target_folder: str) -> None:
         self.copied.append((source_folder, uid, target_folder))
@@ -112,8 +112,8 @@ class FakeEndToEndIMAPClient(FakeIMAPClient):
         question.set_content("Jaka jest cena usługi manicure?")
 
         return [
-            CandidateMessage(uid="41", internaldate=None, raw_bytes=complaint.as_bytes()),
-            CandidateMessage(uid="42", internaldate=None, raw_bytes=question.as_bytes()),
+            CandidateMessage(uid="41", uidvalidity="999", internaldate=None, raw_bytes=complaint.as_bytes()),
+            CandidateMessage(uid="42", uidvalidity="999", internaldate=None, raw_bytes=question.as_bytes()),
         ]
 
 
@@ -145,7 +145,7 @@ class FakeEndToEndLLMGateway(FakeLLMGateway):
         return super().classify(parsed_email)
 
 
-def test_process_inbox_dry_run_persists_state_and_audit(monkeypatch, tmp_path: Path) -> None:
+def test_process_inbox_dry_run_does_not_persist_state_or_drafts(monkeypatch, tmp_path: Path) -> None:
     from mail_ai_agent.main import process_inbox
 
     monkeypatch.setattr("mail_ai_agent.main.IMAPClient", FakeIMAPClient)
@@ -161,17 +161,20 @@ def test_process_inbox_dry_run_persists_state_and_audit(monkeypatch, tmp_path: P
     assert report.candidates_seen == 1
     assert report.mailboxes_processed == 1
     assert len(report.mailbox_reports) == 1
-    assert report.acquired == 1
-    assert report.processed == 1
+    assert report.acquired == 0
+    assert report.simulated == 1
+    assert report.processed == 0
     assert report.failed == 0
     audit_lines = (tmp_path / "audit.jsonl").read_text(encoding="utf-8").splitlines()
     assert len(audit_lines) == 1
     payload = json.loads(audit_lines[0])
     assert payload["mailbox_id"] == settings.default_mailbox_id()
-    assert payload["status_after"] == "processed"
+    assert payload["status_after"] == "simulated"
     assert payload["dry_run"] is True
+    manager = StateManager(tmp_path / "state.sqlite")
+    assert manager.get_by_message_id(settings.default_mailbox_id(), "<test-1@example.com>") is None
     draft_files = list((tmp_path / "drafts").glob("*.json"))
-    assert len(draft_files) == 1
+    assert len(draft_files) == 0
 
 
 def test_process_inbox_moves_message_when_not_in_dry_run(monkeypatch, tmp_path: Path) -> None:
@@ -220,7 +223,8 @@ def test_process_inbox_marks_cleanup_pending_when_delete_fails(monkeypatch, tmp_
     manager = StateManager(tmp_path / "state.sqlite")
     record = manager.get_by_message_id(settings.default_mailbox_id(), "<test-1@example.com>")
     assert record is not None
-    assert record.status.value == "failed"
+    assert record.status.value == "cleanup_pending"
+    assert record.uidvalidity == "999"
     assert record.target_folder == "INBOX.Questions"
     assert record.action_taken == MOVE_CLEANUP_PENDING_ACTION
 
@@ -243,6 +247,52 @@ def test_process_inbox_marks_cleanup_pending_when_delete_fails(monkeypatch, tmp_
     audit_lines = (tmp_path / "audit.jsonl").read_text(encoding="utf-8").splitlines()
     payload = json.loads(audit_lines[0])
     assert payload["action_taken"] == MOVE_CLEANUP_PENDING_ACTION
+
+
+def test_process_inbox_runs_cleanup_pass_before_processing(monkeypatch, tmp_path: Path) -> None:
+    from mail_ai_agent.main import process_inbox
+
+    manager = StateManager(tmp_path / "state.sqlite")
+    acquired = manager.acquire_lease(
+        mailbox_id="user_example_com",
+        message_id="cleanup-msg@example.com",
+        fingerprint="cleanup-fp",
+        imap_uid="40",
+        sender="old@example.com",
+        subject="Stare cleanup pending",
+        source_folder="INBOX.AI-Review",
+        internaldate=None,
+        worker_id="worker-1",
+        lease_seconds=60,
+        max_retries=3,
+    )
+    assert acquired.record is not None
+    manager.mark_move_cleanup_pending(
+        acquired.record.id,
+        category="question",
+        confidence=0.7,
+        target_folder="INBOX.Questions",
+        error_message="delete failed",
+        error_type="RuntimeError",
+    )
+
+    FakeIMAPClient.copied = []
+    FakeIMAPClient.flagged = []
+    FakeIMAPClient.deleted = []
+    FakeIMAPClient.expunged = []
+    monkeypatch.setattr("mail_ai_agent.main.IMAPClient", FakeIMAPClient)
+    monkeypatch.setattr("mail_ai_agent.main.LLMGateway", FakeLLMGateway)
+    settings = make_settings(tmp_path).model_copy(update={"dry_run": False})
+
+    report = process_inbox(settings)
+
+    assert report.processed == 1
+    assert FakeIMAPClient.deleted == [("INBOX.AI-Review", "40"), ("INBOX.AI-Review", "42")]
+    assert FakeIMAPClient.expunged == ["INBOX.AI-Review", "INBOX.AI-Review"]
+    cleaned = manager.get_by_message_id(settings.default_mailbox_id(), "cleanup-msg@example.com")
+    assert cleaned is not None
+    assert cleaned.status.value == "processed"
+    assert cleaned.action_taken == "cleanup_source"
 
 
 def test_process_inbox_end_to_end_persists_rule_and_llm_outputs(monkeypatch, tmp_path: Path) -> None:
@@ -284,11 +334,13 @@ def test_process_inbox_end_to_end_persists_rule_and_llm_outputs(monkeypatch, tmp
     assert complaint.category == "complaint"
     assert complaint.action_taken == "move_skip_ai"
     assert complaint.target_folder == "INBOX.Complaints"
+    assert complaint.uidvalidity == "999"
     assert complaint.rule_hit == "complaint pattern matched"
     assert complaint.model_name is None
     assert question.category == "question"
     assert question.action_taken == "move_route_from_llm"
     assert question.target_folder == "INBOX.Questions"
+    assert question.uidvalidity == "999"
     assert question.model_name == settings.ollama_model
     assert question.model_latency_ms == 12
     assert question.draft_path is not None
@@ -340,7 +392,8 @@ def test_process_inbox_handles_multiple_mailboxes_sequentially(monkeypatch, tmp_
 
     assert report.mailboxes_processed == 2
     assert report.candidates_seen == 2
-    assert report.processed == 2
+    assert report.simulated == 2
+    assert report.processed == 0
     assert [entry.mailbox_id for entry in report.mailbox_reports] == ["kontakt", "shop"]
     audit_lines = [json.loads(line) for line in (tmp_path / "audit.jsonl").read_text(encoding="utf-8").splitlines()]
     assert {line["mailbox_id"] for line in audit_lines} == {"kontakt", "shop"}

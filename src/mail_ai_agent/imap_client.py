@@ -53,18 +53,38 @@ class IMAPClient(AbstractContextManager["IMAPClient"]):
                 time.sleep(self.mailbox.imap_retry_backoff_seconds * attempt)
         raise RuntimeError(f"IMAP operation '{operation_name}' failed after retries: {last_error}") from last_error
 
+    def _get_uidvalidity(self) -> str | None:
+        assert self.connection is not None
+        response = self.connection.response("UIDVALIDITY")
+        if not response or len(response) < 2:
+            return None
+        payload = response[1]
+        if not payload:
+            return None
+        value = payload[0]
+        if isinstance(value, bytes):
+            return value.decode("utf-8", errors="ignore")
+        if isinstance(value, str):
+            return value
+        return None
+
     def fetch_candidates(self, folder: str) -> list[CandidateMessage]:
         def _fetch() -> list[CandidateMessage]:
             assert self.connection is not None
             status, _ = self.connection.select(folder, readonly=True)
             if status != "OK":
                 raise RuntimeError(f"Unable to select folder {folder}")
-            status, data = self.connection.uid("search", None, "ALL")
+            uidvalidity = self._get_uidvalidity()
+            search_tokens = self.mailbox.imap_search_criterion.split()
+            status, data = self.connection.uid("search", None, *search_tokens)
             if status != "OK":
                 raise RuntimeError("Unable to search folder")
 
             messages: list[CandidateMessage] = []
-            for uid in data[0].split():
+            uids = data[0].split()
+            if self.mailbox.imap_fetch_limit > 0:
+                uids = uids[-self.mailbox.imap_fetch_limit :]
+            for uid in uids:
                 status, fetched = self.connection.uid("fetch", uid, "(BODY.PEEK[] INTERNALDATE RFC822.HEADER)")
                 if status != "OK":
                     continue
@@ -76,7 +96,14 @@ class IMAPClient(AbstractContextManager["IMAPClient"]):
                         metadata = item[0].decode("utf-8", errors="ignore")
                         if 'INTERNALDATE "' in metadata:
                             internaldate = metadata.split('INTERNALDATE "', 1)[1].split('"', 1)[0]
-                messages.append(CandidateMessage(uid=uid.decode(), internaldate=internaldate, raw_bytes=raw_bytes))
+                messages.append(
+                    CandidateMessage(
+                        uid=uid.decode(),
+                        uidvalidity=uidvalidity,
+                        internaldate=internaldate,
+                        raw_bytes=raw_bytes,
+                    )
+                )
             return messages
 
         return self._run_with_retry("fetch_candidates", _fetch)

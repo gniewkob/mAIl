@@ -125,4 +125,4 @@ def test_cleanup_cli_does_not_mark_done_when_expunge_fails(
     record = manager.get_by_message_id("user_example_com", "msg-1")
     assert record is not None
     assert record.action_taken == MOVE_CLEANUP_PENDING_ACTION
-    assert record.status.value == "failed"
+    assert record.status.value == "cleanup_pending"

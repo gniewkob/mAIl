@@ -120,7 +120,7 @@ def normalize_body(body: str, max_chars: int) -> str:
     return normalized[:max_chars].strip()
 
 
-def compute_fingerprint(parsed_email: ParsedEmail) -> str:
+def compute_identity_fingerprint(parsed_email: ParsedEmail) -> str:
     source = "|".join(
         [
             _normalize_message_id(parsed_email.message_id),
@@ -131,6 +131,21 @@ def compute_fingerprint(parsed_email: ParsedEmail) -> str:
         ]
     )
     return hashlib.sha256(source.encode("utf-8")).hexdigest()
+
+
+def compute_content_fingerprint(parsed_email: ParsedEmail) -> str:
+    source = "|".join(
+        [
+            _normalize_identity(parsed_email.sender),
+            _normalize_identity(parsed_email.subject),
+            parsed_email.normalized_body[:1000].strip().lower(),
+        ]
+    )
+    return hashlib.sha256(source.encode("utf-8")).hexdigest()
+
+
+def compute_fingerprint(parsed_email: ParsedEmail) -> str:
+    return compute_identity_fingerprint(parsed_email)
 
 
 def _safe_part_content(part) -> str:

@@ -19,6 +19,8 @@ def test_settings_fall_back_to_single_mailbox() -> None:
     assert mailboxes[0].mailbox_id == "user_example_com"
     assert mailboxes[0].imap_source_folder == "INBOX.AI-Review"
     assert mailboxes[0].imap_max_retries == 3
+    assert mailboxes[0].imap_search_criterion == "ALL"
+    assert mailboxes[0].imap_fetch_limit == 100
     assert "secret" not in repr(mailboxes[0])
 
 
@@ -57,5 +59,7 @@ def test_settings_load_mailboxes_from_manifest(tmp_path: Path) -> None:
     assert mailboxes[1].imap_other_folder == "INBOX.Custom-Other"
     assert mailboxes[1].imap_host == "imap.example.com"
     assert mailboxes[1].imap_max_retries == 3
+    assert mailboxes[1].imap_search_criterion == "ALL"
+    assert mailboxes[1].imap_fetch_limit == 100
     assert "secret-a" not in repr(mailboxes[0])
     assert "secret-b" not in repr(mailboxes[1])

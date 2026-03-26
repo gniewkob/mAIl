@@ -7,11 +7,11 @@ from .audit_logger import AuditLogger
 from .config import MailboxConfig, Settings
 from .decision_engine import decide_from_llm, decide_from_rule
 from .draft_store import DraftStore
-from .email_parser import compute_fingerprint, parse_email
+from .email_parser import compute_content_fingerprint, compute_identity_fingerprint, parse_email
 from .imap_client import IMAPClient
 from .llm_gateway import LLMGateway
 from .rule_engine import evaluate_rules
-from .schemas import MailboxProcessingReport, ProcessingReport
+from .schemas import MailboxProcessingReport, ProcessingReport, WorkflowStatus
 from .state_manager import MOVE_CLEANUP_PENDING_ACTION, StateManager
 
 
@@ -60,6 +60,8 @@ def process_mailboxes(settings: Settings) -> ProcessingReport:
             report.acquired += mailbox_report.acquired
             report.processed += mailbox_report.processed
             report.uncertain += mailbox_report.uncertain
+            report.simulated += mailbox_report.simulated
+            report.cleanup_pending += mailbox_report.cleanup_pending
             report.failed += mailbox_report.failed
             report.skipped += mailbox_report.skipped
             report.conflicts += mailbox_report.conflicts
@@ -74,8 +76,71 @@ def process_inbox(settings: Settings) -> ProcessingReport:
 
 def _effective_action_taken(action_taken: str, *, dry_run: bool) -> str:
     if dry_run:
-        return action_taken
+        return f"simulate_{action_taken}"
     return f"move_{action_taken}"
+
+
+def _run_cleanup_pass(
+    *,
+    mailbox: MailboxConfig,
+    state: StateManager,
+    audit: AuditLogger,
+    imap: IMAPClient,
+) -> int:
+    candidates = state.list_cleanup_candidates(mailbox_id=mailbox.mailbox_id, source_folder=mailbox.imap_source_folder)
+    if not candidates:
+        return 0
+
+    cleaned_records: list[tuple[int, str | None, str | None, str | None, str | None, str | None]] = []
+    for record in candidates:
+        if not record.imap_uid:
+            continue
+        try:
+            imap.mark_deleted(mailbox.imap_source_folder, record.imap_uid)
+            cleaned_records.append((record.id, record.message_id, record.fingerprint, record.sender, record.subject, record.target_folder))
+        except Exception as exc:
+            audit.log(
+                level="ERROR",
+                mailbox_id=mailbox.mailbox_id,
+                mailbox_user=mailbox.imap_user,
+                source_folder=mailbox.imap_source_folder,
+                message_id=record.message_id,
+                fingerprint=record.fingerprint,
+                imap_uid=record.imap_uid,
+                sender=record.sender,
+                subject=record.subject,
+                status_before=WorkflowStatus.CLEANUP_PENDING.value,
+                status_after=WorkflowStatus.CLEANUP_PENDING.value,
+                category=record.category,
+                confidence=record.confidence,
+                action_taken=MOVE_CLEANUP_PENDING_ACTION,
+                target_folder=record.target_folder,
+                draft_path=record.draft_path,
+                error=str(exc),
+                dry_run=False,
+            )
+            LOGGER.exception("Cleanup pass failed for mailbox %s", mailbox.mailbox_id)
+    if cleaned_records:
+        imap.expunge(mailbox.imap_source_folder)
+        for record_id, message_id, fingerprint, sender, subject, target_folder in cleaned_records:
+            state.mark_cleanup_done(record_id)
+            audit.log(
+                level="INFO",
+                mailbox_id=mailbox.mailbox_id,
+                mailbox_user=mailbox.imap_user,
+                source_folder=mailbox.imap_source_folder,
+                message_id=message_id,
+                fingerprint=fingerprint,
+                sender=sender,
+                subject=subject,
+                status_before=WorkflowStatus.CLEANUP_PENDING.value,
+                status_after=WorkflowStatus.PROCESSED.value,
+                action_taken="cleanup_source",
+                target_folder=target_folder,
+                error=None,
+                dry_run=False,
+            )
+    return len(cleaned_records)
 
 
 def _process_mailbox(
@@ -89,17 +154,76 @@ def _process_mailbox(
 ) -> MailboxProcessingReport:
     report = MailboxProcessingReport(mailbox_id=mailbox.mailbox_id, mailbox_user=mailbox.imap_user)
     with IMAPClient(mailbox) as imap:
+        if not settings.dry_run:
+            _run_cleanup_pass(mailbox=mailbox, state=state, audit=audit, imap=imap)
         candidates = imap.fetch_candidates(mailbox.imap_source_folder)
         report.candidates_seen = len(candidates)
         for candidate in candidates:
             started = perf_counter()
             parsed = parse_email(candidate.raw_bytes, settings)
-            fingerprint = compute_fingerprint(parsed)
+            fingerprint = compute_identity_fingerprint(parsed)
+            content_fingerprint = compute_content_fingerprint(parsed)
+            if settings.dry_run:
+                try:
+                    rule = evaluate_rules(parsed, mailbox)
+                    latency_ms = None
+                    if rule.action == "needs_llm":
+                        classification, latency_ms = llm.classify(parsed)
+                        decision = decide_from_llm(classification, settings, mailbox)
+                    else:
+                        decision = decide_from_rule(rule)
+                    report.simulated += 1
+                    audit.log(
+                        level="INFO",
+                        mailbox_id=mailbox.mailbox_id,
+                        mailbox_user=mailbox.imap_user,
+                        source_folder=mailbox.imap_source_folder,
+                        message_id=parsed.message_id,
+                        fingerprint=fingerprint,
+                        imap_uid=candidate.uid,
+                        sender=parsed.sender,
+                        subject=parsed.subject,
+                        status_before=None,
+                        status_after="simulated",
+                        category=decision.category,
+                        confidence=decision.confidence,
+                        action_taken=_effective_action_taken(decision.action_taken, dry_run=True),
+                        target_folder=decision.target_folder,
+                        draft_path=None,
+                        duration_ms=int((perf_counter() - started) * 1000),
+                        error=None,
+                        dry_run=True,
+                        model_latency_ms=latency_ms,
+                    )
+                except Exception as exc:  # pragma: no cover - top-level safeguard
+                    LOGGER.exception("Failed to simulate message for mailbox %s", mailbox.mailbox_id)
+                    audit.log(
+                        level="ERROR",
+                        mailbox_id=mailbox.mailbox_id,
+                        mailbox_user=mailbox.imap_user,
+                        source_folder=mailbox.imap_source_folder,
+                        message_id=parsed.message_id,
+                        fingerprint=fingerprint,
+                        imap_uid=candidate.uid,
+                        sender=parsed.sender,
+                        subject=parsed.subject,
+                        status_before=None,
+                        status_after="simulated_failed",
+                        action_taken="simulate_failed",
+                        duration_ms=int((perf_counter() - started) * 1000),
+                        error=str(exc),
+                        dry_run=True,
+                    )
+                    report.failed += 1
+                continue
+
             lease = state.acquire_lease(
                 mailbox_id=mailbox.mailbox_id,
                 message_id=parsed.message_id,
                 fingerprint=fingerprint,
+                content_fingerprint=content_fingerprint,
                 imap_uid=candidate.uid,
+                uidvalidity=candidate.uidvalidity,
                 sender=parsed.sender,
                 subject=parsed.subject,
                 source_folder=mailbox.imap_source_folder,
@@ -182,7 +306,7 @@ def _process_mailbox(
                             sender=parsed.sender,
                             subject=parsed.subject,
                             status_before="processing",
-                            status_after="failed",
+                            status_after=WorkflowStatus.CLEANUP_PENDING.value,
                             category=decision.category,
                             confidence=decision.confidence,
                             action_taken=MOVE_CLEANUP_PENDING_ACTION,
@@ -193,6 +317,7 @@ def _process_mailbox(
                             dry_run=settings.dry_run,
                         )
                         report.failed += 1
+                        report.cleanup_pending += 1
                         continue
 
                 if decision.final_status.value == "uncertain":

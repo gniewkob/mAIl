@@ -81,9 +81,14 @@ Then update `.env.multi.test` so `MAILBOXES_CONFIG_PATH=config/mailboxes.local.j
 
 - processed mail is moved with IMAP `copy -> mark_deleted -> expunge`
 - deterministic complaint rules add `\\Flagged`
-- if copy succeeds but source cleanup fails, state is stored as `move_copy_succeeded_cleanup_pending`
-- `cleanup_cli` can retry source-folder cleanup for pending records
+- if copy succeeds but source cleanup fails, state is stored as `cleanup_pending` with action `move_copy_succeeded_cleanup_pending`
+- worker runs an automatic cleanup pass for `cleanup_pending` records before processing new candidates
+- `cleanup_cli` can still retry source-folder cleanup manually for pending records
 - IMAP operations use retry and reconnect with `IMAP_MAX_RETRIES` and `IMAP_RETRY_BACKOFF_SECONDS`
+- candidate selection is configurable with `IMAP_SEARCH_CRITERION` and capped by `IMAP_FETCH_LIMIT`
+- fetched candidates now carry IMAP `UIDVALIDITY` into persisted workflow state
+- state stores both an identity fingerprint and a content fingerprint; content fingerprint is used only as fallback deduplication when `Message-ID` is missing
+- `DRY_RUN=true` is a simulation mode: no IMAP mutation, no terminal SQLite state, no draft files
 
 Manual cleanup preview:
 

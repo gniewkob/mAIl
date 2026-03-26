@@ -12,6 +12,7 @@ class WorkflowStatus(str, Enum):
     PROCESSING = "processing"
     PROCESSED = "processed"
     UNCERTAIN = "uncertain"
+    CLEANUP_PENDING = "cleanup_pending"
     FAILED = "failed"
     SKIPPED = "skipped"
 
@@ -100,6 +101,7 @@ class EmailRecord(BaseModel):
     mailbox_id: str
     message_id: str | None = None
     fingerprint: str
+    content_fingerprint: str | None = None
     imap_uid: str | None = None
     uidvalidity: str | None = None
     source_folder: str | None = None
@@ -141,6 +143,7 @@ class WorkerLockResult(BaseModel):
 
 class CandidateMessage(BaseModel):
     uid: str
+    uidvalidity: str | None = None
     internaldate: str | None = None
     message_id: str | None = None
     raw_bytes: bytes
@@ -153,6 +156,8 @@ class MailboxProcessingReport(BaseModel):
     acquired: int = 0
     processed: int = 0
     uncertain: int = 0
+    simulated: int = 0
+    cleanup_pending: int = 0
     failed: int = 0
     skipped: int = 0
     conflicts: int = 0
@@ -165,6 +170,8 @@ class ProcessingReport(BaseModel):
     acquired: int = 0
     processed: int = 0
     uncertain: int = 0
+    simulated: int = 0
+    cleanup_pending: int = 0
     failed: int = 0
     skipped: int = 0
     conflicts: int = 0

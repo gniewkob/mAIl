@@ -23,6 +23,8 @@ class MailboxConfig(BaseModel):
     imap_pass: SecretStr
     imap_max_retries: int = 3
     imap_retry_backoff_seconds: float = 0.5
+    imap_search_criterion: str = "ALL"
+    imap_fetch_limit: int = 100
 
     imap_source_folder: str = "INBOX.AI-Review"
     imap_uncertain_folder: str = "INBOX.AI-Uncertain"
@@ -45,6 +47,8 @@ class MailboxConfig(BaseModel):
             imap_pass=settings.imap_pass,
             imap_max_retries=settings.imap_max_retries,
             imap_retry_backoff_seconds=settings.imap_retry_backoff_seconds,
+            imap_search_criterion=settings.imap_search_criterion,
+            imap_fetch_limit=settings.imap_fetch_limit,
             imap_source_folder=settings.imap_source_folder,
             imap_uncertain_folder=settings.imap_uncertain_folder,
             imap_appointments_folder=settings.imap_appointments_folder,
@@ -69,6 +73,8 @@ class Settings(BaseSettings):
     imap_pass: SecretStr | None = Field(default=None, alias="IMAP_PASS")
     imap_max_retries: int = Field(default=3, alias="IMAP_MAX_RETRIES")
     imap_retry_backoff_seconds: float = Field(default=0.5, alias="IMAP_RETRY_BACKOFF_SECONDS")
+    imap_search_criterion: str = Field(default="ALL", alias="IMAP_SEARCH_CRITERION")
+    imap_fetch_limit: int = Field(default=100, alias="IMAP_FETCH_LIMIT")
 
     imap_source_folder: str = Field(default="INBOX.AI-Review", alias="IMAP_SOURCE_FOLDER")
     imap_uncertain_folder: str = Field(default="INBOX.AI-Uncertain", alias="IMAP_UNCERTAIN_FOLDER")
@@ -137,6 +143,8 @@ class Settings(BaseSettings):
             "imap_pass": raw_mailbox["imap_pass"],
             "imap_max_retries": raw_mailbox.get("imap_max_retries") or self.imap_max_retries,
             "imap_retry_backoff_seconds": raw_mailbox.get("imap_retry_backoff_seconds") or self.imap_retry_backoff_seconds,
+            "imap_search_criterion": raw_mailbox.get("imap_search_criterion") or self.imap_search_criterion,
+            "imap_fetch_limit": raw_mailbox.get("imap_fetch_limit") or self.imap_fetch_limit,
             "imap_source_folder": raw_mailbox.get("imap_source_folder") or self.imap_source_folder,
             "imap_uncertain_folder": raw_mailbox.get("imap_uncertain_folder") or self.imap_uncertain_folder,
             "imap_appointments_folder": raw_mailbox.get("imap_appointments_folder") or self.imap_appointments_folder,

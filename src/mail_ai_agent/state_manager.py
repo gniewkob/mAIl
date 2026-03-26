@@ -29,6 +29,7 @@ class StateManager:
                     mailbox_id TEXT NOT NULL DEFAULT 'default',
                     message_id TEXT,
                     fingerprint TEXT NOT NULL,
+                    content_fingerprint TEXT,
                     imap_uid TEXT,
                     uidvalidity TEXT,
                     source_folder TEXT,
@@ -66,6 +67,8 @@ class StateManager:
             columns = {row["name"] for row in conn.execute("PRAGMA table_info(email_processing_state)").fetchall()}
             if "mailbox_id" not in columns:
                 conn.execute("ALTER TABLE email_processing_state ADD COLUMN mailbox_id TEXT NOT NULL DEFAULT 'default'")
+            if "content_fingerprint" not in columns:
+                conn.execute("ALTER TABLE email_processing_state ADD COLUMN content_fingerprint TEXT")
             conn.execute("UPDATE email_processing_state SET mailbox_id = 'default' WHERE mailbox_id IS NULL OR mailbox_id = ''")
             conn.executescript(
                 """
@@ -80,6 +83,8 @@ class StateManager:
                     ON email_processing_state(status);
                 CREATE INDEX IF NOT EXISTS idx_email_mailbox_status
                     ON email_processing_state(mailbox_id, status);
+                CREATE INDEX IF NOT EXISTS idx_email_mailbox_content_fingerprint
+                    ON email_processing_state(mailbox_id, content_fingerprint);
                 """
             )
 
@@ -132,7 +137,9 @@ class StateManager:
         mailbox_id: str,
         message_id: str | None,
         fingerprint: str,
+        content_fingerprint: str | None = None,
         imap_uid: str,
+        uidvalidity: str | None = None,
         sender: str,
         subject: str,
         source_folder: str,
@@ -144,9 +151,9 @@ class StateManager:
         now = datetime.now(timezone.utc)
         expires_at = now + timedelta(seconds=lease_seconds)
         with self._connect() as conn:
-            row_by_mid, row_by_fp = self._lookup_identity_rows(conn, mailbox_id, message_id, fingerprint)
-            if self._is_identity_conflict(row_by_mid, row_by_fp):
-                row = row_by_mid or row_by_fp
+            identity_rows = self._lookup_identity_rows(conn, mailbox_id, message_id, fingerprint, content_fingerprint)
+            if self._is_identity_conflict(identity_rows):
+                row = next((row for row in identity_rows if row is not None), None)
                 assert row is not None
                 return LeaseAcquireResult(
                     outcome="conflict",
@@ -154,14 +161,14 @@ class StateManager:
                     reason="message identity conflict",
                 )
 
-            row = row_by_mid or row_by_fp
+            row = next((row for row in identity_rows if row is not None), None)
             if row is not None:
                 record = self._row_to_record(row)
                 if self._is_message_mismatch(record, message_id, fingerprint):
                     return LeaseAcquireResult(outcome="conflict", record=record, reason="message identity conflict")
                 if record.status in {WorkflowStatus.PROCESSED, WorkflowStatus.SKIPPED, WorkflowStatus.UNCERTAIN}:
                     return LeaseAcquireResult(outcome="already_done", record=record, reason=f"message already {record.status.value}")
-                if record.status == WorkflowStatus.FAILED and record.action_taken == MOVE_CLEANUP_PENDING_ACTION:
+                if record.status == WorkflowStatus.CLEANUP_PENDING:
                     return LeaseAcquireResult(
                         outcome="already_done",
                         record=record,
@@ -178,7 +185,8 @@ class StateManager:
                 conn.execute(
                     """
                     UPDATE email_processing_state
-                    SET status = ?, imap_uid = ?, source_folder = ?, sender = ?, subject = ?,
+                    SET status = ?, imap_uid = ?, uidvalidity = ?, source_folder = ?, sender = ?, subject = ?,
+                        content_fingerprint = ?,
                         internaldate = ?, processing_started_at = ?, lock_expires_at = ?,
                         lock_owner = ?, attempt_count = ?, updated_at = ?
                     WHERE id = ?
@@ -186,9 +194,11 @@ class StateManager:
                     (
                         WorkflowStatus.PROCESSING.value,
                         imap_uid,
+                        uidvalidity,
                         source_folder,
                         sender,
                         subject,
+                        content_fingerprint,
                         internaldate,
                         now.isoformat(),
                         expires_at.isoformat(),
@@ -208,16 +218,18 @@ class StateManager:
             cursor = conn.execute(
                 """
                 INSERT INTO email_processing_state (
-                    mailbox_id, message_id, fingerprint, imap_uid, source_folder, sender, subject, internaldate,
+                    mailbox_id, message_id, fingerprint, content_fingerprint, imap_uid, uidvalidity, source_folder, sender, subject, internaldate,
                     status, processing_started_at, lock_expires_at, lock_owner, attempt_count,
                     created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     mailbox_id,
                     message_id,
                     fingerprint,
+                    content_fingerprint,
                     imap_uid,
+                    uidvalidity,
                     source_folder,
                     sender,
                     subject,
@@ -317,7 +329,7 @@ class StateManager:
     ) -> None:
         self._update_terminal(
             record_id,
-            status=WorkflowStatus.FAILED,
+            status=WorkflowStatus.CLEANUP_PENDING,
             category=category,
             confidence=confidence,
             target_folder=target_folder,
@@ -363,7 +375,7 @@ class StateManager:
                   AND source_folder = ?
                   AND target_folder IS NOT NULL
                   AND (
-                        action_taken = ?
+                        status = ?
                         OR (
                             status = ?
                             AND action_taken != ?
@@ -375,7 +387,7 @@ class StateManager:
                 (
                     mailbox_id,
                     source_folder,
-                    MOVE_CLEANUP_PENDING_ACTION,
+                    WorkflowStatus.CLEANUP_PENDING.value,
                     WorkflowStatus.PROCESSED.value,
                     "cleanup_source",
                     "move_%",
@@ -401,7 +413,8 @@ class StateManager:
         mailbox_id: str,
         message_id: str | None,
         fingerprint: str,
-    ) -> tuple[sqlite3.Row | None, sqlite3.Row | None]:
+        content_fingerprint: str | None,
+    ) -> tuple[sqlite3.Row | None, sqlite3.Row | None, sqlite3.Row | None]:
         row_by_mid = None
         if message_id is not None:
             row_by_mid = conn.execute(
@@ -412,12 +425,21 @@ class StateManager:
             "SELECT * FROM email_processing_state WHERE mailbox_id = ? AND fingerprint = ?",
             (mailbox_id, fingerprint),
         ).fetchone()
-        return row_by_mid, row_by_fp
+        row_by_content = None
+        if message_id is None and content_fingerprint:
+            row_by_content = conn.execute(
+                """
+                SELECT *
+                FROM email_processing_state
+                WHERE mailbox_id = ? AND content_fingerprint = ? AND message_id IS NULL
+                """,
+                (mailbox_id, content_fingerprint),
+            ).fetchone()
+        return row_by_mid, row_by_fp, row_by_content
 
-    def _is_identity_conflict(self, row_by_mid: sqlite3.Row | None, row_by_fp: sqlite3.Row | None) -> bool:
-        if row_by_mid is None or row_by_fp is None:
-            return False
-        return row_by_mid["id"] != row_by_fp["id"]
+    def _is_identity_conflict(self, rows: tuple[sqlite3.Row | None, ...]) -> bool:
+        ids = {row["id"] for row in rows if row is not None}
+        return len(ids) > 1
 
     def _is_message_mismatch(self, record: EmailRecord, message_id: str | None, fingerprint: str) -> bool:
         return bool(message_id and record.message_id and record.message_id == message_id and record.fingerprint != fingerprint)

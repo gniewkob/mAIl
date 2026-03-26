@@ -229,3 +229,94 @@ def test_same_identity_can_exist_in_different_mailboxes(tmp_path: Path) -> None:
     assert second.outcome == "acquired"
     assert second.record is not None
     assert second.record.mailbox_id == "inbox_b"
+
+
+def test_cleanup_pending_message_is_not_reacquired(tmp_path: Path) -> None:
+    manager = StateManager(tmp_path / "state.sqlite")
+    initial = manager.acquire_lease(
+        mailbox_id="inbox_a",
+        message_id="msg-cleanup",
+        fingerprint="fp-cleanup",
+        imap_uid="10",
+        sender="client@example.com",
+        subject="Pytanie",
+        source_folder="INBOX.AI-Review",
+        internaldate=None,
+        worker_id="worker-1",
+        lease_seconds=60,
+        max_retries=3,
+    )
+    assert initial.record is not None
+    manager.mark_move_cleanup_pending(
+        initial.record.id,
+        category="question",
+        confidence=0.9,
+        target_folder="INBOX.Questions",
+        error_message="delete failed",
+        error_type="RuntimeError",
+    )
+
+    result = manager.acquire_lease(
+        mailbox_id="inbox_a",
+        message_id="msg-cleanup",
+        fingerprint="fp-cleanup",
+        imap_uid="10",
+        sender="client@example.com",
+        subject="Pytanie",
+        source_folder="INBOX.AI-Review",
+        internaldate=None,
+        worker_id="worker-2",
+        lease_seconds=60,
+        max_retries=3,
+    )
+
+    assert result.outcome == "already_done"
+    assert result.record is not None
+    assert result.record.status == WorkflowStatus.CLEANUP_PENDING
+
+
+def test_content_fingerprint_fallback_deduplicates_messages_without_message_id(tmp_path: Path) -> None:
+    manager = StateManager(tmp_path / "state.sqlite")
+    first = manager.acquire_lease(
+        mailbox_id="inbox_a",
+        message_id=None,
+        fingerprint="identity-fp-1",
+        content_fingerprint="content-fp-1",
+        imap_uid="10",
+        uidvalidity="999",
+        sender="client@example.com",
+        subject="Pytanie",
+        source_folder="INBOX.AI-Review",
+        internaldate=None,
+        worker_id="worker-1",
+        lease_seconds=60,
+        max_retries=3,
+    )
+    assert first.record is not None
+    manager.mark_processed(
+        first.record.id,
+        category="question",
+        confidence=0.9,
+        target_folder="INBOX.Questions",
+        action_taken="move_route_from_llm",
+    )
+
+    second = manager.acquire_lease(
+        mailbox_id="inbox_a",
+        message_id=None,
+        fingerprint="identity-fp-2",
+        content_fingerprint="content-fp-1",
+        imap_uid="11",
+        uidvalidity="999",
+        sender="client@example.com",
+        subject="Pytanie",
+        source_folder="INBOX.AI-Review",
+        internaldate=None,
+        worker_id="worker-2",
+        lease_seconds=60,
+        max_retries=3,
+    )
+
+    assert second.outcome == "already_done"
+    assert second.record is not None
+    assert second.record.content_fingerprint == "content-fp-1"

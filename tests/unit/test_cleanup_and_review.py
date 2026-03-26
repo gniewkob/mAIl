@@ -150,7 +150,7 @@ def test_review_report_builds_rows_and_csv(tmp_path: Path) -> None:
                         "message_id": "m3",
                         "sender": "client3@example.com",
                         "subject": "Problem po copy",
-                        "status_after": "failed",
+                        "status_after": "cleanup_pending",
                         "category": "question",
                         "confidence": 0.88,
                         "target_folder": "INBOX.Questions",
@@ -173,7 +173,7 @@ def test_review_report_builds_rows_and_csv(tmp_path: Path) -> None:
     assert rows[0]["mailbox_id"] == "inbox_a"
     assert summary["rows"] == 3
     assert summary["uncertain"] == 1
-    assert summary["failed"] == 1
+    assert summary["failed"] == 0
     assert summary["cleanup_pending"] == 1
     assert summary["drafts"] == 1
     assert csv_path.exists()

@@ -7,6 +7,7 @@ from collections import Counter
 from pathlib import Path
 from typing import Any
 
+from .schemas import WorkflowStatus
 from .state_manager import MOVE_CLEANUP_PENDING_ACTION
 
 
@@ -38,6 +39,7 @@ def summarize_audit_records(records: list[dict[str, Any]]) -> dict[str, Any]:
         "mailboxes": dict(sorted(mailbox_counts.items())),
         "errors": len(errors),
         "cleanup_pending": cleanup_pending,
+        "simulated": status_counts.get("simulated", 0),
     }
 
 
@@ -92,8 +94,8 @@ def summarize_state(db_path: Path) -> dict[str, Any]:
         ).fetchall()
         total = conn.execute("SELECT COUNT(*) FROM email_processing_state").fetchone()[0]
         cleanup_pending = conn.execute(
-            "SELECT COUNT(*) FROM email_processing_state WHERE action_taken = ?",
-            (MOVE_CLEANUP_PENDING_ACTION,),
+            "SELECT COUNT(*) FROM email_processing_state WHERE status = ?",
+            (WorkflowStatus.CLEANUP_PENDING.value,),
         ).fetchone()[0]
     return {
         "records": total,
