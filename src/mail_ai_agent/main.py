@@ -7,7 +7,7 @@ from .audit_logger import AuditLogger
 from .config import MailboxConfig, Settings
 from .decision_engine import decide_from_llm, decide_from_rule
 from .draft_store import DraftStore
-from .email_parser import compute_content_fingerprint, compute_identity_fingerprint, parse_email
+from .email_parser import compute_content_fingerprint, compute_message_fingerprint, parse_email
 from .imap_client import IMAPClient
 from .llm_gateway import LLMGateway
 from .rule_engine import evaluate_rules
@@ -229,7 +229,7 @@ def _process_mailbox(
         for candidate in candidates:
             started = perf_counter()
             parsed = parse_email(candidate.raw_bytes, settings)
-            fingerprint = compute_identity_fingerprint(parsed)
+            fingerprint = compute_message_fingerprint(parsed)
             content_fingerprint = compute_content_fingerprint(parsed)
             if settings.dry_run:
                 try:

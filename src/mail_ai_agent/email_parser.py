@@ -120,7 +120,7 @@ def normalize_body(body: str, max_chars: int) -> str:
     return normalized[:max_chars].strip()
 
 
-def compute_identity_fingerprint(parsed_email: ParsedEmail) -> str:
+def compute_message_fingerprint(parsed_email: ParsedEmail) -> str:
     source = "|".join(
         [
             _normalize_message_id(parsed_email.message_id),
@@ -145,7 +145,7 @@ def compute_content_fingerprint(parsed_email: ParsedEmail) -> str:
 
 
 def compute_fingerprint(parsed_email: ParsedEmail) -> str:
-    return compute_identity_fingerprint(parsed_email)
+    return compute_message_fingerprint(parsed_email)
 
 
 def _safe_part_content(part) -> str:

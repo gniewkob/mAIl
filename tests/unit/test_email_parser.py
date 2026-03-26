@@ -3,7 +3,7 @@ from __future__ import annotations
 from email.message import EmailMessage
 
 from mail_ai_agent.config import Settings
-from mail_ai_agent.email_parser import compute_content_fingerprint, compute_identity_fingerprint, parse_email
+from mail_ai_agent.email_parser import compute_content_fingerprint, compute_message_fingerprint, parse_email
 
 
 def make_settings() -> Settings:
@@ -62,7 +62,7 @@ def test_fingerprint_is_stable_for_same_message() -> None:
     first = parse_email(message.as_bytes(), settings)
     second = parse_email(message.as_bytes(), settings)
 
-    assert compute_identity_fingerprint(first) == compute_identity_fingerprint(second)
+    assert compute_message_fingerprint(first) == compute_message_fingerprint(second)
     assert compute_content_fingerprint(first) == compute_content_fingerprint(second)
 
 
@@ -81,11 +81,11 @@ def test_fingerprint_changes_when_body_changes() -> None:
     parsed_first = parse_email(first.as_bytes(), settings)
     parsed_second = parse_email(second.as_bytes(), settings)
 
-    assert compute_identity_fingerprint(parsed_first) != compute_identity_fingerprint(parsed_second)
+    assert compute_message_fingerprint(parsed_first) != compute_message_fingerprint(parsed_second)
     assert compute_content_fingerprint(parsed_first) != compute_content_fingerprint(parsed_second)
 
 
-def test_identity_fingerprint_changes_when_message_id_changes_for_same_content() -> None:
+def test_message_fingerprint_changes_when_message_id_changes_for_same_content() -> None:
     settings = make_settings()
     first = EmailMessage()
     first["From"] = "client@example.com"
@@ -102,11 +102,11 @@ def test_identity_fingerprint_changes_when_message_id_changes_for_same_content()
     parsed_first = parse_email(first.as_bytes(), settings)
     parsed_second = parse_email(second.as_bytes(), settings)
 
-    assert compute_identity_fingerprint(parsed_first) != compute_identity_fingerprint(parsed_second)
+    assert compute_message_fingerprint(parsed_first) != compute_message_fingerprint(parsed_second)
     assert compute_content_fingerprint(parsed_first) == compute_content_fingerprint(parsed_second)
 
 
-def test_identity_fingerprint_changes_when_date_changes_and_message_id_missing() -> None:
+def test_message_fingerprint_changes_when_date_changes_and_message_id_missing() -> None:
     settings = make_settings()
     first = EmailMessage()
     first["From"] = "client@example.com"
@@ -123,5 +123,5 @@ def test_identity_fingerprint_changes_when_date_changes_and_message_id_missing()
     parsed_first = parse_email(first.as_bytes(), settings)
     parsed_second = parse_email(second.as_bytes(), settings)
 
-    assert compute_identity_fingerprint(parsed_first) != compute_identity_fingerprint(parsed_second)
+    assert compute_message_fingerprint(parsed_first) != compute_message_fingerprint(parsed_second)
     assert compute_content_fingerprint(parsed_first) == compute_content_fingerprint(parsed_second)

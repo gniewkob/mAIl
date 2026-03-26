@@ -89,7 +89,7 @@ Then update `.env.multi.test` so `MAILBOXES_CONFIG_PATH=config/mailboxes.local.j
 - candidate selection is configurable with `IMAP_SEARCH_CRITERION` and capped by `IMAP_FETCH_LIMIT`
 - `IMAP_SEARCH_CRITERION` is intentionally limited to a small safe whitelist: `ALL`, `UNSEEN`, `UNANSWERED`, `FLAGGED`, `UNSEEN UNANSWERED`, `UNSEEN FLAGGED`
 - fetched candidates now carry IMAP `UIDVALIDITY` into persisted workflow state
-- state stores both an identity fingerprint and a content fingerprint; content fingerprint is used only as fallback deduplication when `Message-ID` is missing
+- state stores both a message fingerprint and a content fingerprint; content fingerprint is used only as fallback deduplication when `Message-ID` is missing
 - `DRY_RUN=true` is a simulation mode: no IMAP mutation, no terminal SQLite state, no draft files
 - cleanup candidate selection now targets only explicit `cleanup_pending` records; legacy cleanup heuristics are no longer part of the main runtime path
 
