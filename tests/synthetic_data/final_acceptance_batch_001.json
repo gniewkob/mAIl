@@ -1,0 +1,86 @@
+[
+  {
+    "message_id": "<final-appointment-001@local>",
+    "category_expected": "appointment",
+    "subject": "Prosba o termin manicure w piatek",
+    "from": "Lena Klient <lena.klient@example.com>",
+    "body": "Dzien dobry, czy maja Panstwo wolny termin na manicure w piatek po 15:00?"
+  },
+  {
+    "message_id": "<final-appointment-002@local>",
+    "category_expected": "appointment",
+    "subject": "Zmiana terminu wizyty na sobote",
+    "from": "Patrycja Klient <patrycja.klient@example.com>",
+    "body": "Dzien dobry, czy moge przelozyc moja wizyte z czwartku na sobote rano?"
+  },
+  {
+    "message_id": "<final-appointment-003@local>",
+    "category_expected": "appointment",
+    "subject": "Czy sa wolne terminy na henne brwi jutro?",
+    "from": "Kamila Klient <kamila.klient@example.com>",
+    "body": "Dzien dobry, czy maja Panstwo jutro wolny termin na henne brwi po 17:00?"
+  },
+  {
+    "message_id": "<final-question-001@local>",
+    "category_expected": "question",
+    "subject": "Pytanie o cennik manicure hybrydowego",
+    "from": "Ewelina Pytanie <ewelina.pytanie@example.com>",
+    "body": "Dzien dobry, jaki jest aktualny cennik manicure hybrydowego?"
+  },
+  {
+    "message_id": "<final-question-002@local>",
+    "category_expected": "question",
+    "subject": "Godziny otwarcia w sobote",
+    "from": "Natalia Pytanie <natalia.pytanie@example.com>",
+    "body": "Dzien dobry, w jakich godzinach salon jest otwarty w sobote?"
+  },
+  {
+    "message_id": "<final-question-003@local>",
+    "category_expected": "question",
+    "subject": "Pytanie o lokalizacje salonu",
+    "from": "Alicja Klient <alicja.klient@example.com>",
+    "body": "Dzien dobry, gdzie dokladnie znajduje sie salon i czy obok jest parking?"
+  },
+  {
+    "message_id": "<final-complaint-001@local>",
+    "category_expected": "complaint",
+    "subject": "Reklamacja po ostatniej wizycie numer final",
+    "from": "Joanna Reklamacja <joanna.reklamacja@example.com>",
+    "body": "Dzien dobry, po ostatniej wizycie mam problem z usluga i chce zlozyc reklamacje. Prosze o pilny kontakt."
+  },
+  {
+    "message_id": "<final-complaint-002@local>",
+    "category_expected": "complaint",
+    "subject": "Pilna reklamacja i prosba o telefon final",
+    "from": "Monika Reklamacja <monika.reklamacja@example.com>",
+    "body": "Dzien dobry, prosze o pilny telefon od wlasciciela. Jestem bardzo niezadowolona z wykonanej uslugi i skladam reklamacje."
+  },
+  {
+    "message_id": "<final-complaint-003@local>",
+    "category_expected": "complaint",
+    "subject": "Uprzejma reklamacja po zabiegu final",
+    "from": "Iwona Klient <iwona.klient@example.com>",
+    "body": "Dzien dobry, uprzejmie prosze o kontakt. Efekt po zabiegu jest wyraznie inny niz uzgodniony, dlatego chce zlozyc reklamacje."
+  },
+  {
+    "message_id": "<final-offer-001@local>",
+    "category_expected": "spam_or_offer",
+    "subject": "Oferta SEO dla salonu final",
+    "from": "Agency Boost <agency@example.test>",
+    "body": "Dzien dobry, chcemy przedstawic oferte SEO i reklam dla Panstwa salonu."
+  },
+  {
+    "message_id": "<final-offer-002@local>",
+    "category_expected": "spam_or_offer",
+    "subject": "Wspolpraca reklamowa i lead generation final",
+    "from": "Growth Team <growth@example.test>",
+    "body": "Reprezentuje agencje marketingowa i chcialbym porozmawiac o wspolpracy reklamowej oraz pozyskiwaniu leadow."
+  },
+  {
+    "message_id": "<final-offer-003@local>",
+    "category_expected": "spam_or_offer",
+    "subject": "Zapytanie o wspolpracy reklamowej i SEO final",
+    "from": "Klient Premium 4 <contact4@premium-growth.test>",
+    "body": "Dzien dobry, reprezentuje agencje marketingowa i chcialbym porozmawiac o wspolpracy reklamowej, SEO i kampaniach dla salonu."
+  }
+]

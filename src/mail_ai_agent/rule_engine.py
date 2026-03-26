@@ -1,0 +1,81 @@
+from __future__ import annotations
+
+import re
+
+from .config import MailboxConfig
+from .folder_mapper import category_to_folder
+from .schemas import ParsedEmail, RuleDecision
+
+BILLING_KEYWORDS = ("faktura", "invoice", "fv", "proforma")
+SYSTEM_PATTERNS = ("mailer-daemon", "delivery status notification", "failure notice", "postmaster")
+COMPLAINT_REGEX = re.compile(
+    r"\b("
+    r"reklamacj\w*|"
+    r"niezadowolon\w*|"
+    r"nieudanej usludze|"
+    r"prosz[eę] o pilny kontakt z wlascicielem|"
+    r"prosz[eę] o kontakt z wlascicielem|"
+    r"efekt uslugi jest inny niz oczekiwany"
+    r")\b",
+    flags=re.IGNORECASE,
+)
+MARKETING_REGEX = re.compile(
+    r"\b("
+    r"seo|"
+    r"leadgen|lead generation|pozyskiwani[ea] lead[oó]w?|"
+    r"marketing\w*|marketing automation|"
+    r"ads|reklam(y|a|owa|owej|owe|owych)?|kampani\w*|"
+    r"cooperation|offer|ofert[ay]|"
+    r"wsp[oó]łprac\w*|"
+    r"agencj\w*|"
+    r"reprezentuj\w* agencj\w*"
+    r")\b",
+    flags=re.IGNORECASE,
+)
+
+
+def evaluate_rules(parsed_email: ParsedEmail, mailbox: MailboxConfig) -> RuleDecision:
+    subject = parsed_email.subject.lower()
+    sender = parsed_email.sender.lower()
+    body = parsed_email.normalized_body.lower()
+    combined = " ".join([subject, sender, body])
+
+    if any(keyword in subject for keyword in BILLING_KEYWORDS):
+        return RuleDecision(
+            category="billing",
+            target_folder=category_to_folder("billing", mailbox),
+            action="skip_ai",
+            reason="billing keyword matched in subject",
+        )
+
+    if any(pattern in combined for pattern in SYSTEM_PATTERNS):
+        return RuleDecision(
+            category="system",
+            target_folder=category_to_folder("system", mailbox),
+            action="skip_ai",
+            reason="system pattern matched",
+        )
+
+    if COMPLAINT_REGEX.search(combined):
+        return RuleDecision(
+            category="complaint",
+            target_folder=category_to_folder("complaint", mailbox),
+            action="skip_ai",
+            requires_flag=True,
+            reason="complaint pattern matched",
+        )
+
+    if MARKETING_REGEX.search(combined):
+        return RuleDecision(
+            category="spam_or_offer",
+            target_folder=category_to_folder("other", mailbox),
+            action="skip_ai",
+            reason="marketing or outreach pattern matched",
+        )
+
+    return RuleDecision(
+        category="unknown",
+        target_folder=mailbox.imap_source_folder,
+        action="needs_llm",
+        reason="no deterministic rule matched",
+    )

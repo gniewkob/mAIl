@@ -1,0 +1,36 @@
+.venv/
+__pycache__/
+.pytest_cache/
+.mypy_cache/
+.DS_Store
+*.pyc
+
+# Local secrets
+.env
+.env.*
+!.env.example
+!.env.test.example
+!.env.multi.test.example
+!.env.multi.prod.example
+
+# Local mailbox manifests
+config/mailboxes*.json
+!config/mailboxes.example.json
+
+# Runtime artifacts
+data/
+logs/
+output/
+drafts/pending/
+drafts/test-pending/
+drafts/multi-test-pending/
+drafts/multi-prod-pending/
+
+# Local launchd definitions
+*.plist
+!*.plist.template
+
+# Internal operational notes not meant for a public repo
+docs/
+plan.md
+testy.md

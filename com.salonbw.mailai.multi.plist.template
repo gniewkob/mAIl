@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.salonbw.mailai.multi</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/REPLACE_ME/Repos/priv/mAIl/.venv/bin/python</string>
+        <string>-m</string>
+        <string>mail_ai_agent.cli</string>
+        <string>--env-file</string>
+        <string>/Users/REPLACE_ME/Repos/priv/mAIl/.env.multi.prod</string>
+        <string>--json</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/REPLACE_ME/Repos/priv/mAIl</string>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>StartInterval</key>
+    <integer>300</integer>
+
+    <key>StandardOutPath</key>
+    <string>/Users/REPLACE_ME/Repos/priv/mAIl/logs/launchd-multi-stdout.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>/Users/REPLACE_ME/Repos/priv/mAIl/logs/launchd-multi-stderr.log</string>
+
+    <key>KeepAlive</key>
+    <false/>
+</dict>
+</plist>

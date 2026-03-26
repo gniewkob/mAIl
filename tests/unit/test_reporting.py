@@ -1,0 +1,72 @@
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+from mail_ai_agent.reporting import (
+    export_audit_csv,
+    export_state_csv,
+    load_audit_records,
+    summarize_audit_records,
+    summarize_state,
+)
+from mail_ai_agent.state_manager import StateManager
+
+
+def test_audit_reporting_summary_and_csv(tmp_path: Path) -> None:
+    audit_path = tmp_path / "audit.jsonl"
+    audit_path.write_text(
+        "\n".join(
+            [
+                json.dumps({"mailbox_id": "inbox_a", "action_taken": "route_from_llm", "status_after": "processed", "category": "question"}),
+                json.dumps({"mailbox_id": "inbox_b", "action_taken": "failed", "status_after": "failed", "error": "boom"}),
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    records = load_audit_records(audit_path)
+    summary = summarize_audit_records(records)
+    csv_path = tmp_path / "audit.csv"
+    export_audit_csv(records, csv_path)
+
+    assert summary["records"] == 2
+    assert summary["actions"]["failed"] == 1
+    assert summary["statuses"]["processed"] == 1
+    assert summary["mailboxes"]["inbox_a"] == 1
+    assert csv_path.exists()
+
+
+def test_state_reporting_summary_and_csv(tmp_path: Path) -> None:
+    manager = StateManager(tmp_path / "state.sqlite")
+    result = manager.acquire_lease(
+        mailbox_id="inbox_a",
+        message_id="msg-1",
+        fingerprint="fp-1",
+        imap_uid="10",
+        sender="client@example.com",
+        subject="Pytanie",
+        source_folder="INBOX.AI-Review",
+        internaldate=None,
+        worker_id="worker-1",
+        lease_seconds=60,
+        max_retries=3,
+    )
+    assert result.record is not None
+    manager.mark_processed(
+        result.record.id,
+        category="question",
+        confidence=0.8,
+        target_folder="INBOX.Questions",
+        action_taken="route_from_llm",
+    )
+
+    summary = summarize_state(tmp_path / "state.sqlite")
+    csv_path = tmp_path / "state.csv"
+    exported_rows = export_state_csv(tmp_path / "state.sqlite", csv_path)
+
+    assert summary["records"] == 1
+    assert summary["statuses"]["processed"] == 1
+    assert summary["mailboxes"]["inbox_a"] == 1
+    assert exported_rows == 1
+    assert csv_path.exists()

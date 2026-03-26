@@ -1,0 +1,16 @@
+from __future__ import annotations
+
+from .config import MailboxConfig
+
+
+def category_to_folder(category: str, mailbox: MailboxConfig) -> str:
+    mapping = {
+        "appointment": mailbox.imap_appointments_folder,
+        "question": mailbox.imap_questions_folder,
+        "complaint": mailbox.imap_complaints_folder,
+        "spam_or_offer": mailbox.imap_other_folder,
+        "other": mailbox.imap_other_folder,
+        "billing": mailbox.imap_billing_folder,
+        "system": mailbox.imap_system_folder,
+    }
+    return mapping[category]
