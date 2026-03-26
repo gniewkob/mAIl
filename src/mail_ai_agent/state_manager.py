@@ -6,6 +6,8 @@ from pathlib import Path
 
 from .schemas import EmailRecord, LeaseAcquireResult, WorkerLockResult, WorkflowStatus
 
+MOVE_CLEANUP_PENDING_ACTION = "move_copy_succeeded_cleanup_pending"
+
 
 class StateManager:
     def __init__(self, db_path: Path) -> None:
@@ -159,6 +161,12 @@ class StateManager:
                     return LeaseAcquireResult(outcome="conflict", record=record, reason="message identity conflict")
                 if record.status in {WorkflowStatus.PROCESSED, WorkflowStatus.SKIPPED, WorkflowStatus.UNCERTAIN}:
                     return LeaseAcquireResult(outcome="already_done", record=record, reason=f"message already {record.status.value}")
+                if record.status == WorkflowStatus.FAILED and record.action_taken == MOVE_CLEANUP_PENDING_ACTION:
+                    return LeaseAcquireResult(
+                        outcome="already_done",
+                        record=record,
+                        reason="message copied already; source cleanup pending",
+                    )
                 if record.attempt_count >= max_retries and record.status in {WorkflowStatus.FAILED, WorkflowStatus.PROCESSING}:
                     return LeaseAcquireResult(outcome="already_done", record=record, reason="max retries exceeded")
                 if record.status == WorkflowStatus.PROCESSING and record.lock_expires_at:
@@ -293,6 +301,35 @@ class StateManager:
             model_latency_ms=None,
         )
 
+    def mark_move_cleanup_pending(
+        self,
+        record_id: int,
+        *,
+        category: str,
+        confidence: float | None,
+        target_folder: str,
+        draft_path: str | None = None,
+        rule_hit: str | None = None,
+        model_name: str | None = None,
+        model_latency_ms: int | None = None,
+        error_message: str,
+        error_type: str,
+    ) -> None:
+        self._update_terminal(
+            record_id,
+            status=WorkflowStatus.FAILED,
+            category=category,
+            confidence=confidence,
+            target_folder=target_folder,
+            action_taken=MOVE_CLEANUP_PENDING_ACTION,
+            draft_path=draft_path,
+            error_message=error_message,
+            last_error_type=error_type,
+            rule_hit=rule_hit,
+            model_name=model_name,
+            model_latency_ms=model_latency_ms,
+        )
+
     def get_by_id(self, record_id: int) -> EmailRecord | None:
         with self._connect() as conn:
             row = conn.execute("SELECT * FROM email_processing_state WHERE id = ?", (record_id,)).fetchone()
@@ -323,13 +360,26 @@ class StateManager:
                 SELECT *
                 FROM email_processing_state
                 WHERE mailbox_id = ?
-                  AND status = ?
                   AND source_folder = ?
                   AND target_folder IS NOT NULL
-                  AND action_taken != ?
+                  AND (
+                        action_taken = ?
+                        OR (
+                            status = ?
+                            AND action_taken != ?
+                            AND action_taken NOT LIKE ?
+                        )
+                  )
                 ORDER BY id
                 """,
-                (mailbox_id, WorkflowStatus.PROCESSED.value, source_folder, "cleanup_source"),
+                (
+                    mailbox_id,
+                    source_folder,
+                    MOVE_CLEANUP_PENDING_ACTION,
+                    WorkflowStatus.PROCESSED.value,
+                    "cleanup_source",
+                    "move_%",
+                ),
             ).fetchall()
         return [self._row_to_record(row) for row in rows]
 
@@ -339,10 +389,10 @@ class StateManager:
             conn.execute(
                 """
                 UPDATE email_processing_state
-                SET action_taken = ?, updated_at = ?
+                SET status = ?, action_taken = ?, error_message = NULL, last_error_at = NULL, last_error_type = NULL, updated_at = ?
                 WHERE id = ?
                 """,
-                ("cleanup_source", now, record_id),
+                (WorkflowStatus.PROCESSED.value, "cleanup_source", now, record_id),
             )
 
     def _lookup_identity_rows(

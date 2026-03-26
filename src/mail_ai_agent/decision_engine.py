@@ -6,10 +6,11 @@ from .schemas import FinalDecision, LLMClassification, RuleDecision, WorkflowSta
 
 
 def decide_from_rule(rule: RuleDecision) -> FinalDecision:
+    flags = ["\\Flagged"] if rule.requires_flag else []
     return FinalDecision(
         category=rule.category,
         target_folder=rule.target_folder,
-        flags=[],
+        flags=flags,
         final_status=WorkflowStatus.PROCESSED,
         action_taken=rule.action,
     )

@@ -7,6 +7,8 @@ from collections import Counter
 from pathlib import Path
 from typing import Any
 
+from .state_manager import MOVE_CLEANUP_PENDING_ACTION
+
 
 def load_audit_records(path: Path) -> list[dict[str, Any]]:
     if not path.exists():
@@ -27,6 +29,7 @@ def summarize_audit_records(records: list[dict[str, Any]]) -> dict[str, Any]:
     category_counts = Counter(record.get("category") for record in records if record.get("category"))
     mailbox_counts = Counter(record.get("mailbox_id") for record in records if record.get("mailbox_id"))
     errors = [record for record in records if record.get("error")]
+    cleanup_pending = sum(1 for record in records if record.get("action_taken") == MOVE_CLEANUP_PENDING_ACTION)
     return {
         "records": len(records),
         "actions": dict(sorted(action_counts.items())),
@@ -34,6 +37,7 @@ def summarize_audit_records(records: list[dict[str, Any]]) -> dict[str, Any]:
         "categories": dict(sorted(category_counts.items())),
         "mailboxes": dict(sorted(mailbox_counts.items())),
         "errors": len(errors),
+        "cleanup_pending": cleanup_pending,
     }
 
 
@@ -67,7 +71,7 @@ def export_state_csv(db_path: Path, destination: Path) -> int:
 
 def summarize_state(db_path: Path) -> dict[str, Any]:
     if not db_path.exists():
-        return {"records": 0, "statuses": {}, "mailboxes": {}}
+        return {"records": 0, "statuses": {}, "mailboxes": {}, "cleanup_pending": 0}
     with sqlite3.connect(db_path) as conn:
         conn.row_factory = sqlite3.Row
         rows = conn.execute(
@@ -87,8 +91,13 @@ def summarize_state(db_path: Path) -> dict[str, Any]:
             """
         ).fetchall()
         total = conn.execute("SELECT COUNT(*) FROM email_processing_state").fetchone()[0]
+        cleanup_pending = conn.execute(
+            "SELECT COUNT(*) FROM email_processing_state WHERE action_taken = ?",
+            (MOVE_CLEANUP_PENDING_ACTION,),
+        ).fetchone()[0]
     return {
         "records": total,
         "statuses": {row["status"]: row["count"] for row in rows},
         "mailboxes": {row["mailbox_id"]: row["count"] for row in mailbox_rows},
+        "cleanup_pending": cleanup_pending,
     }

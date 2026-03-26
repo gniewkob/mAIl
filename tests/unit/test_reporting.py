@@ -10,7 +10,7 @@ from mail_ai_agent.reporting import (
     summarize_audit_records,
     summarize_state,
 )
-from mail_ai_agent.state_manager import StateManager
+from mail_ai_agent.state_manager import MOVE_CLEANUP_PENDING_ACTION, StateManager
 
 
 def test_audit_reporting_summary_and_csv(tmp_path: Path) -> None:
@@ -19,7 +19,7 @@ def test_audit_reporting_summary_and_csv(tmp_path: Path) -> None:
         "\n".join(
             [
                 json.dumps({"mailbox_id": "inbox_a", "action_taken": "route_from_llm", "status_after": "processed", "category": "question"}),
-                json.dumps({"mailbox_id": "inbox_b", "action_taken": "failed", "status_after": "failed", "error": "boom"}),
+                json.dumps({"mailbox_id": "inbox_b", "action_taken": MOVE_CLEANUP_PENDING_ACTION, "status_after": "failed", "error": "boom"}),
             ]
         ),
         encoding="utf-8",
@@ -31,9 +31,10 @@ def test_audit_reporting_summary_and_csv(tmp_path: Path) -> None:
     export_audit_csv(records, csv_path)
 
     assert summary["records"] == 2
-    assert summary["actions"]["failed"] == 1
+    assert summary["actions"][MOVE_CLEANUP_PENDING_ACTION] == 1
     assert summary["statuses"]["processed"] == 1
     assert summary["mailboxes"]["inbox_a"] == 1
+    assert summary["cleanup_pending"] == 1
     assert csv_path.exists()
 
 
@@ -60,13 +61,37 @@ def test_state_reporting_summary_and_csv(tmp_path: Path) -> None:
         target_folder="INBOX.Questions",
         action_taken="route_from_llm",
     )
+    retry = manager.acquire_lease(
+        mailbox_id="inbox_a",
+        message_id="msg-2",
+        fingerprint="fp-2",
+        imap_uid="11",
+        sender="client2@example.com",
+        subject="Drugie pytanie",
+        source_folder="INBOX.AI-Review",
+        internaldate=None,
+        worker_id="worker-1",
+        lease_seconds=60,
+        max_retries=3,
+    )
+    assert retry.record is not None
+    manager.mark_move_cleanup_pending(
+        retry.record.id,
+        category="question",
+        confidence=0.7,
+        target_folder="INBOX.Questions",
+        error_message="delete failed",
+        error_type="RuntimeError",
+    )
 
     summary = summarize_state(tmp_path / "state.sqlite")
     csv_path = tmp_path / "state.csv"
     exported_rows = export_state_csv(tmp_path / "state.sqlite", csv_path)
 
-    assert summary["records"] == 1
+    assert summary["records"] == 2
     assert summary["statuses"]["processed"] == 1
-    assert summary["mailboxes"]["inbox_a"] == 1
-    assert exported_rows == 1
+    assert summary["statuses"]["failed"] == 1
+    assert summary["mailboxes"]["inbox_a"] == 2
+    assert summary["cleanup_pending"] == 1
+    assert exported_rows == 2
     assert csv_path.exists()

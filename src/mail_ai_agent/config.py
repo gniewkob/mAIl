@@ -21,6 +21,8 @@ class MailboxConfig(BaseModel):
     imap_port: int = 993
     imap_user: str
     imap_pass: SecretStr
+    imap_max_retries: int = 3
+    imap_retry_backoff_seconds: float = 0.5
 
     imap_source_folder: str = "INBOX.AI-Review"
     imap_uncertain_folder: str = "INBOX.AI-Uncertain"
@@ -41,6 +43,8 @@ class MailboxConfig(BaseModel):
             imap_port=settings.imap_port,
             imap_user=settings.imap_user,
             imap_pass=settings.imap_pass,
+            imap_max_retries=settings.imap_max_retries,
+            imap_retry_backoff_seconds=settings.imap_retry_backoff_seconds,
             imap_source_folder=settings.imap_source_folder,
             imap_uncertain_folder=settings.imap_uncertain_folder,
             imap_appointments_folder=settings.imap_appointments_folder,
@@ -63,6 +67,8 @@ class Settings(BaseSettings):
     imap_port: int = Field(default=993, alias="IMAP_PORT")
     imap_user: str | None = Field(default=None, alias="IMAP_USER")
     imap_pass: SecretStr | None = Field(default=None, alias="IMAP_PASS")
+    imap_max_retries: int = Field(default=3, alias="IMAP_MAX_RETRIES")
+    imap_retry_backoff_seconds: float = Field(default=0.5, alias="IMAP_RETRY_BACKOFF_SECONDS")
 
     imap_source_folder: str = Field(default="INBOX.AI-Review", alias="IMAP_SOURCE_FOLDER")
     imap_uncertain_folder: str = Field(default="INBOX.AI-Uncertain", alias="IMAP_UNCERTAIN_FOLDER")
@@ -129,6 +135,8 @@ class Settings(BaseSettings):
             "imap_port": raw_mailbox.get("imap_port") or self.imap_port,
             "imap_user": mailbox_user,
             "imap_pass": raw_mailbox["imap_pass"],
+            "imap_max_retries": raw_mailbox.get("imap_max_retries") or self.imap_max_retries,
+            "imap_retry_backoff_seconds": raw_mailbox.get("imap_retry_backoff_seconds") or self.imap_retry_backoff_seconds,
             "imap_source_folder": raw_mailbox.get("imap_source_folder") or self.imap_source_folder,
             "imap_uncertain_folder": raw_mailbox.get("imap_uncertain_folder") or self.imap_uncertain_folder,
             "imap_appointments_folder": raw_mailbox.get("imap_appointments_folder") or self.imap_appointments_folder,

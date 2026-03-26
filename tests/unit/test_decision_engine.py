@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 from mail_ai_agent.config import Settings
-from mail_ai_agent.decision_engine import decide_from_llm
-from mail_ai_agent.schemas import LLMClassification, LLMEntities, WorkflowStatus
+from mail_ai_agent.decision_engine import decide_from_llm, decide_from_rule
+from mail_ai_agent.schemas import LLMClassification, LLMEntities, RuleDecision, WorkflowStatus
 
 
 def make_settings() -> Settings:
@@ -48,3 +48,18 @@ def test_high_confidence_complaint_gets_flagged() -> None:
     assert decision.final_status == WorkflowStatus.PROCESSED
     assert "\\Flagged" in decision.flags
     assert decision.draft_reply is not None
+
+
+def test_rule_decision_propagates_flag_requirement() -> None:
+    decision = decide_from_rule(
+        RuleDecision(
+            category="complaint",
+            target_folder="INBOX.Complaints",
+            action="route",
+            requires_flag=True,
+            reason="complaint keyword",
+        )
+    )
+
+    assert decision.final_status == WorkflowStatus.PROCESSED
+    assert decision.flags == ["\\Flagged"]

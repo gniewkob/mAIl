@@ -12,7 +12,7 @@ from .imap_client import IMAPClient
 from .llm_gateway import LLMGateway
 from .rule_engine import evaluate_rules
 from .schemas import MailboxProcessingReport, ProcessingReport
-from .state_manager import StateManager
+from .state_manager import MOVE_CLEANUP_PENDING_ACTION, StateManager
 
 
 LOGGER = logging.getLogger(__name__)
@@ -70,6 +70,12 @@ def process_mailboxes(settings: Settings) -> ProcessingReport:
 
 def process_inbox(settings: Settings) -> ProcessingReport:
     return process_mailboxes(settings)
+
+
+def _effective_action_taken(action_taken: str, *, dry_run: bool) -> str:
+    if dry_run:
+        return action_taken
+    return f"move_{action_taken}"
 
 
 def _process_mailbox(
@@ -142,10 +148,52 @@ def _process_mailbox(
                         )
                     )
 
+                action_taken = _effective_action_taken(decision.action_taken, dry_run=settings.dry_run)
+
                 if not settings.dry_run:
                     if decision.flags:
                         imap.set_flagged(mailbox.imap_source_folder, candidate.uid)
                     imap.copy_message(mailbox.imap_source_folder, candidate.uid, decision.target_folder)
+                    try:
+                        imap.mark_deleted(mailbox.imap_source_folder, candidate.uid)
+                        imap.expunge(mailbox.imap_source_folder)
+                    except Exception as exc:
+                        LOGGER.exception("Copy succeeded but source cleanup failed for mailbox %s", mailbox.mailbox_id)
+                        state.mark_move_cleanup_pending(
+                            record.id,
+                            category=decision.category,
+                            confidence=decision.confidence,
+                            target_folder=decision.target_folder,
+                            draft_path=draft_path,
+                            rule_hit=None if rule.action == "needs_llm" else rule.reason,
+                            model_name=settings.ollama_model if rule.action == "needs_llm" else None,
+                            model_latency_ms=latency_ms,
+                            error_message=str(exc),
+                            error_type=exc.__class__.__name__,
+                        )
+                        audit.log(
+                            level="ERROR",
+                            mailbox_id=mailbox.mailbox_id,
+                            mailbox_user=mailbox.imap_user,
+                            source_folder=mailbox.imap_source_folder,
+                            message_id=parsed.message_id,
+                            fingerprint=fingerprint,
+                            imap_uid=candidate.uid,
+                            sender=parsed.sender,
+                            subject=parsed.subject,
+                            status_before="processing",
+                            status_after="failed",
+                            category=decision.category,
+                            confidence=decision.confidence,
+                            action_taken=MOVE_CLEANUP_PENDING_ACTION,
+                            target_folder=decision.target_folder,
+                            draft_path=draft_path,
+                            duration_ms=int((perf_counter() - started) * 1000),
+                            error=str(exc),
+                            dry_run=settings.dry_run,
+                        )
+                        report.failed += 1
+                        continue
 
                 if decision.final_status.value == "uncertain":
                     state.mark_uncertain(record.id, category=decision.category, confidence=decision.confidence)
@@ -156,7 +204,7 @@ def _process_mailbox(
                         category=decision.category,
                         confidence=decision.confidence,
                         target_folder=decision.target_folder,
-                        action_taken=decision.action_taken,
+                        action_taken=action_taken,
                         draft_path=draft_path,
                         rule_hit=None if rule.action == "needs_llm" else rule.reason,
                         model_name=settings.ollama_model if rule.action == "needs_llm" else None,
@@ -178,7 +226,7 @@ def _process_mailbox(
                     status_after=decision.final_status.value,
                     category=decision.category,
                     confidence=decision.confidence,
-                    action_taken=decision.action_taken,
+                    action_taken=action_taken,
                     target_folder=decision.target_folder,
                     draft_path=draft_path,
                     duration_ms=int((perf_counter() - started) * 1000),

@@ -9,7 +9,7 @@ from .state_manager import StateManager
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Controlled cleanup for source-folder messages after copy-only routing")
+    parser = argparse.ArgumentParser(description="Controlled cleanup for source-folder messages after partial move or legacy copy-only routing")
     parser.add_argument("--env-file", default=None, help="Optional env file path")
     parser.add_argument("--mailbox-id", default=None, help="Optional mailbox id when using multi-mailbox config")
     parser.add_argument("--apply", action="store_true", help="Actually mark source messages as deleted")
@@ -46,13 +46,16 @@ def main() -> None:
         return
 
     with IMAPClient(mailbox) as imap:
+        cleaned_record_ids: list[int] = []
         for record in candidates:
             if not record.imap_uid:
                 continue
             imap.mark_deleted(mailbox.imap_source_folder, record.imap_uid)
-            state.mark_cleanup_done(record.id)
+            cleaned_record_ids.append(record.id)
         if args.expunge and candidates:
             imap.expunge(mailbox.imap_source_folder)
+        for record_id in cleaned_record_ids:
+            state.mark_cleanup_done(record_id)
 
     print(json.dumps(payload, ensure_ascii=False, indent=2))
 

@@ -62,7 +62,7 @@ Set `MAILBOXES_CONFIG_PATH` in your env file to your local mailbox manifest.
 
 Start from the example:
 
-- [`config/mailboxes.example.json`](/Users/gniewkob/Repos/priv/mAIl/config/mailboxes.example.json)
+- [config/mailboxes.example.json](config/mailboxes.example.json)
 
 Prepare local files:
 
@@ -75,6 +75,26 @@ Then update `.env.multi.test` so `MAILBOXES_CONFIG_PATH=config/mailboxes.local.j
 
 ```bash
 .venv/bin/python -m mail_ai_agent.cli --env-file .env.multi.test --json
+```
+
+## Runtime behavior
+
+- processed mail is moved with IMAP `copy -> mark_deleted -> expunge`
+- deterministic complaint rules add `\\Flagged`
+- if copy succeeds but source cleanup fails, state is stored as `move_copy_succeeded_cleanup_pending`
+- `cleanup_cli` can retry source-folder cleanup for pending records
+- IMAP operations use retry and reconnect with `IMAP_MAX_RETRIES` and `IMAP_RETRY_BACKOFF_SECONDS`
+
+Manual cleanup preview:
+
+```bash
+.venv/bin/python -m mail_ai_agent.cleanup_cli
+```
+
+Apply cleanup and expunge:
+
+```bash
+.venv/bin/python -m mail_ai_agent.cleanup_cli --apply --expunge
 ```
 
 ## Bootstrap

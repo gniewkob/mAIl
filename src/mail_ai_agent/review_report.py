@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from .reporting import load_audit_records
+from .state_manager import MOVE_CLEANUP_PENDING_ACTION
 
 
 def build_review_rows(audit_path: Path) -> list[dict[str, Any]]:
@@ -55,12 +56,14 @@ def export_review_csv(rows: list[dict[str, Any]], destination: Path) -> None:
 
 
 def summarize_review_rows(rows: list[dict[str, Any]]) -> dict[str, int]:
-    summary = {"rows": len(rows), "uncertain": 0, "failed": 0, "drafts": 0}
+    summary = {"rows": len(rows), "uncertain": 0, "failed": 0, "drafts": 0, "cleanup_pending": 0}
     for row in rows:
         if row["status_after"] == "uncertain":
             summary["uncertain"] += 1
         if row["status_after"] == "failed":
             summary["failed"] += 1
+        if row["action_taken"] == MOVE_CLEANUP_PENDING_ACTION:
+            summary["cleanup_pending"] += 1
         if row["draft_path"]:
             summary["drafts"] += 1
     return summary
