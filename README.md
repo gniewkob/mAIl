@@ -87,7 +87,7 @@ Then update `.env.multi.test` so `MAILBOXES_CONFIG_PATH=config/mailboxes.local.j
 - cleanup pass verifies stored `UIDVALIDITY` before deleting from source; mismatches are skipped and logged
 - IMAP operations use retry and reconnect with `IMAP_MAX_RETRIES` and `IMAP_RETRY_BACKOFF_SECONDS`
 - candidate selection is configurable with `IMAP_SEARCH_CRITERION` and capped by `IMAP_FETCH_LIMIT`
-- `IMAP_SEARCH_CRITERION` is tokenized with shell-like quoting, so simple quoted criteria such as `TEXT "hello world"` are supported
+- `IMAP_SEARCH_CRITERION` is intentionally limited to a small safe whitelist: `ALL`, `UNSEEN`, `UNANSWERED`, `FLAGGED`, `UNSEEN UNANSWERED`, `UNSEEN FLAGGED`
 - fetched candidates now carry IMAP `UIDVALIDITY` into persisted workflow state
 - state stores both an identity fingerprint and a content fingerprint; content fingerprint is used only as fallback deduplication when `Message-ID` is missing
 - `DRY_RUN=true` is a simulation mode: no IMAP mutation, no terminal SQLite state, no draft files

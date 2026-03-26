@@ -320,3 +320,41 @@ def test_content_fingerprint_fallback_deduplicates_messages_without_message_id(t
     assert second.outcome == "already_done"
     assert second.record is not None
     assert second.record.content_fingerprint == "content-fp-1"
+
+
+def test_uidvalidity_change_is_reported_as_conflict(tmp_path: Path) -> None:
+    manager = StateManager(tmp_path / "state.sqlite")
+    first = manager.acquire_lease(
+        mailbox_id="inbox_a",
+        message_id="msg-uidv",
+        fingerprint="fp-uidv",
+        imap_uid="10",
+        uidvalidity="999",
+        sender="client@example.com",
+        subject="Pytanie",
+        source_folder="INBOX.AI-Review",
+        internaldate=None,
+        worker_id="worker-1",
+        lease_seconds=60,
+        max_retries=3,
+    )
+    assert first.record is not None
+    manager.mark_failed(first.record.id, error_message="test", error_type="TestError")
+
+    second = manager.acquire_lease(
+        mailbox_id="inbox_a",
+        message_id="msg-uidv",
+        fingerprint="fp-uidv",
+        imap_uid="10",
+        uidvalidity="1000",
+        sender="client@example.com",
+        subject="Pytanie",
+        source_folder="INBOX.AI-Review",
+        internaldate=None,
+        worker_id="worker-2",
+        lease_seconds=60,
+        max_retries=3,
+    )
+
+    assert second.outcome == "conflict"
+    assert second.reason == "uidvalidity changed"

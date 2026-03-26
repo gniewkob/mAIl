@@ -164,6 +164,8 @@ class StateManager:
             row = next((row for row in identity_rows if row is not None), None)
             if row is not None:
                 record = self._row_to_record(row)
+                if self._is_uidvalidity_mismatch(record, uidvalidity):
+                    return LeaseAcquireResult(outcome="conflict", record=record, reason="uidvalidity changed")
                 if self._is_message_mismatch(record, message_id, fingerprint):
                     return LeaseAcquireResult(outcome="conflict", record=record, reason="message identity conflict")
                 if record.status in {WorkflowStatus.PROCESSED, WorkflowStatus.SKIPPED, WorkflowStatus.UNCERTAIN}:
@@ -433,6 +435,9 @@ class StateManager:
 
     def _is_message_mismatch(self, record: EmailRecord, message_id: str | None, fingerprint: str) -> bool:
         return bool(message_id and record.message_id and record.message_id == message_id and record.fingerprint != fingerprint)
+
+    def _is_uidvalidity_mismatch(self, record: EmailRecord, uidvalidity: str | None) -> bool:
+        return bool(record.uidvalidity and uidvalidity and record.uidvalidity != uidvalidity)
 
     def _update_terminal(
         self,

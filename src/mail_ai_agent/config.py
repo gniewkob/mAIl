@@ -5,7 +5,7 @@ import re
 from pathlib import Path
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from pydantic import SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -13,6 +13,21 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 def _default_mailbox_id(imap_user: str) -> str:
     normalized = re.sub(r"[^a-zA-Z0-9]+", "_", imap_user.strip().lower()).strip("_")
     return normalized or "mailbox_default"
+
+
+def _normalize_imap_search_criterion(value: str) -> str:
+    normalized = " ".join(value.strip().upper().split())
+    allowed = {
+        "ALL",
+        "UNSEEN",
+        "UNANSWERED",
+        "FLAGGED",
+        "UNSEEN UNANSWERED",
+        "UNSEEN FLAGGED",
+    }
+    if normalized not in allowed:
+        raise ValueError(f"Unsupported IMAP_SEARCH_CRITERION: {value}")
+    return normalized
 
 
 class MailboxConfig(BaseModel):
@@ -34,6 +49,11 @@ class MailboxConfig(BaseModel):
     imap_other_folder: str = "INBOX.Other"
     imap_billing_folder: str = "INBOX.Billing"
     imap_system_folder: str = "INBOX.System"
+
+    @field_validator("imap_search_criterion")
+    @classmethod
+    def validate_imap_search_criterion(cls, value: str) -> str:
+        return _normalize_imap_search_criterion(value)
 
     @classmethod
     def from_settings(cls, settings: Settings) -> MailboxConfig:
@@ -106,6 +126,11 @@ class Settings(BaseSettings):
     audit_log_path: Path = Field(default=Path("logs/audit.jsonl"), alias="AUDIT_LOG_PATH")
     draft_dir: Path = Field(default=Path("drafts/pending"), alias="DRAFT_DIR")
     worker_id: str = Field(default="mail-ai-worker-1", alias="WORKER_ID")
+
+    @field_validator("imap_search_criterion")
+    @classmethod
+    def validate_imap_search_criterion(cls, value: str) -> str:
+        return _normalize_imap_search_criterion(value)
 
     def default_mailbox_id(self) -> str:
         return _default_mailbox_id(self.imap_user or "default")
