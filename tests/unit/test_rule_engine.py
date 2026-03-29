@@ -65,6 +65,16 @@ def test_rule_engine_catches_polish_inflections_for_marketing_offer() -> None:
     assert decision.category == "spam_or_offer"
 
 
+def test_category_to_folder_unknown_returns_source_folder():
+    from mail_ai_agent.folder_mapper import category_to_folder
+    from mail_ai_agent.config import MailboxConfig
+    from pydantic import SecretStr
+
+    mailbox = MailboxConfig(mailbox_id="test", imap_host="imap.example.com",
+                            imap_user="u@example.com", imap_pass=SecretStr("secret"))
+    assert category_to_folder("unknown_category", mailbox) == mailbox.imap_source_folder
+
+
 def test_rule_engine_does_not_confuse_reklamacja_with_marketing() -> None:
     parsed = ParsedEmail(
         sender="Joanna Reklamacja <joanna.reklamacja@example.com>",

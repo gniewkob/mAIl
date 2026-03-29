@@ -13,4 +13,4 @@ def category_to_folder(category: str, mailbox: MailboxConfig) -> str:
         "billing": mailbox.imap_billing_folder,
         "system": mailbox.imap_system_folder,
     }
-    return mapping[category]
+    return mapping.get(category, mailbox.imap_source_folder)
