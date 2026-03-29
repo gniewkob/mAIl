@@ -377,3 +377,22 @@ def test_state_manager_has_busy_timeout(tmp_path):
     assert timeout >= 5000, f"Expected busy_timeout >= 5000ms, got: {timeout}"
 
 
+def test_worker_lock_acquired_once_by_first_caller(tmp_path):
+    from mail_ai_agent.state_manager import StateManager
+    sm = StateManager(tmp_path / "state.sqlite")
+    r1 = sm.acquire_worker_lock(worker_id="w1", lease_seconds=60)
+    r2 = sm.acquire_worker_lock(worker_id="w2", lease_seconds=60)
+    assert r1.acquired is True
+    assert r2.acquired is False
+    assert r2.lock_owner == "w1"
+
+
+def test_worker_lock_same_worker_can_refresh(tmp_path):
+    from mail_ai_agent.state_manager import StateManager
+    sm = StateManager(tmp_path / "state.sqlite")
+    r1 = sm.acquire_worker_lock(worker_id="w1", lease_seconds=60)
+    r2 = sm.acquire_worker_lock(worker_id="w1", lease_seconds=60)
+    assert r1.acquired is True
+    assert r2.acquired is True
+
+

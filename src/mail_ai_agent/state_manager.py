@@ -94,6 +94,7 @@ class StateManager:
         now = datetime.now(timezone.utc)
         expires_at = now + timedelta(seconds=lease_seconds)
         with self._connect() as conn:
+            conn.execute("BEGIN EXCLUSIVE")
             row = conn.execute(
                 "SELECT * FROM worker_runtime_lock WHERE lock_name = ?",
                 ("main",),
