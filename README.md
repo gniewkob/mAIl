@@ -187,6 +187,21 @@ PII scrub for existing state and drafts:
   --scrub-draft-pii
 ```
 
+Grafana / Prometheus checks:
+
+```bash
+bash scripts/prod_metrics.sh
+curl -sS http://127.0.0.1:9177/metrics | sed -n '1,80p'
+curl -sS 'http://127.0.0.1:9090/api/v1/query?query=mailai_health_ok'
+```
+
+The production dashboard is `mAiL Overview` in the Grafana folder `mAiL`.
+
+- top row: current operational state
+- mailbox/category/route charts: historical distribution from audit-derived metrics
+- `rule_share`: quality tuning signal, not an outage signal
+- `failed`, `cleanup_pending`, and `uncertain`: operational risk signals
+
 ## Bootstrap
 
 ```bash
@@ -236,6 +251,20 @@ One-shot Prometheus output preview:
 ```
 
 For a persistent local exporter, load [com.mailai.metrics.prod.plist](/Users/gniewkob/Repos/priv/mAIl/com.mailai.metrics.prod.plist) and scrape `127.0.0.1:9177/metrics` from Prometheus.
+
+## Next stage
+
+The current hardening pass is complete. The next recommended development stage is quality iteration, not more core runtime changes.
+
+Priority order:
+
+1. build a `rule suggestions` workflow from production audit patterns
+2. review repeated `route_source=llm` decisions and promote low-risk recurring cases into deterministic rules
+3. expand the golden set with anonymized real examples from production
+4. run regular quality review on `billing`, `question`, `complaint`, `other`, and `spam_or_offer`
+5. keep Grafana as the operator view, but gate rule changes through review and tests
+
+The system may suggest new rules periodically, but should not auto-apply them to production without review.
 
 ## Tests
 
