@@ -3,13 +3,13 @@
     {
       "mailbox_id": "kontakt",
       "imap_user": "kontakt@example.com",
-      "imap_pass": "replace-me",
+      "imap_pass_ref": "env:MAILBOX_SECRET_KONTAKT",
       "imap_source_folder": "INBOX.Test-AI-Review"
     },
     {
       "mailbox_id": "shop",
       "imap_user": "shop@example.com",
-      "imap_pass": "replace-me",
+      "imap_pass_ref": "keychain:mail-ai/shop@example.com",
       "imap_source_folder": "INBOX.Shop-AI-Review",
       "imap_other_folder": "INBOX.Shop-Other"
     }

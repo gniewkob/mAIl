@@ -78,6 +78,45 @@ class IMAPClient(AbstractContextManager["IMAPClient"]):
 
         return self._run_with_retry("get_uidvalidity", _get)
 
+    def ensure_folder_access(self, folder: str, *, readonly: bool) -> None:
+        def _ensure() -> None:
+            assert self.connection is not None
+            status, _ = self.connection.select(folder, readonly=readonly)
+            if status != "OK":
+                mode = "read-only" if readonly else "read-write"
+                raise RuntimeError(f"Unable to select folder {folder} in {mode} mode")
+
+        self._run_with_retry("ensure_folder_access", _ensure)
+
+    def supports_uidplus(self) -> bool:
+        assert self.connection is not None
+        capabilities = getattr(self.connection, "capabilities", None)
+        if not capabilities and hasattr(self.connection, "capability"):
+            status, data = self.connection.capability()
+            if status == "OK" and data:
+                capabilities = set(b" ".join(data).split())
+        if not capabilities:
+            return False
+        normalized = {
+            capability.decode("utf-8", errors="ignore").upper() if isinstance(capability, bytes) else str(capability).upper()
+            for capability in capabilities
+        }
+        return "UIDPLUS" in normalized
+
+    def validate_routing_setup(self, *, source_folder: str, target_folders: list[str], dry_run: bool) -> None:
+        self.ensure_folder_access(source_folder, readonly=dry_run)
+        unique_targets = []
+        for folder in target_folders:
+            if folder not in unique_targets:
+                unique_targets.append(folder)
+        for folder in unique_targets:
+            self.ensure_folder_access(folder, readonly=False)
+        if not dry_run and not (self.supports_uidplus() or self.mailbox.imap_allow_folder_expunge):
+            raise RuntimeError(
+                "IMAP server does not advertise UIDPLUS and folder-level expunge is disabled. "
+                "Enable IMAP_ALLOW_FOLDER_EXPUNGE only if the source folder is exclusively owned by this worker."
+            )
+
     def fetch_candidates(self, folder: str) -> list[CandidateMessage]:
         def _fetch() -> list[CandidateMessage]:
             assert self.connection is not None
@@ -119,8 +158,8 @@ class IMAPClient(AbstractContextManager["IMAPClient"]):
 
         return self._run_with_retry("fetch_candidates", _fetch)
 
-    def copy_message(self, source_folder: str, uid: str, target_folder: str) -> None:
-        def _copy() -> None:
+    def copy_message(self, source_folder: str, uid: str, target_folder: str) -> str | None:
+        def _copy() -> str | None:
             assert self.connection is not None
             status, _ = self.connection.select(source_folder)
             if status != "OK":
@@ -128,8 +167,27 @@ class IMAPClient(AbstractContextManager["IMAPClient"]):
             status, _ = self.connection.uid("copy", uid, target_folder)
             if status != "OK":
                 raise RuntimeError(f"Unable to copy message {uid} to {target_folder}")
+            return self._extract_copyuid(uid)
 
-        self._run_with_retry("copy_message", _copy)
+        return self._run_with_retry("copy_message", _copy)
+
+    def _extract_copyuid(self, source_uid: str) -> str | None:
+        assert self.connection is not None
+        response = self.connection.response("COPYUID")
+        if not response or len(response) < 2 or not response[1]:
+            return None
+        payload = response[1][0]
+        raw = payload.decode("utf-8", errors="ignore") if isinstance(payload, bytes) else str(payload)
+        parts = raw.strip().split()
+        if len(parts) < 3:
+            return None
+        source_set = parts[1]
+        target_set = parts[2]
+        if "," in source_set or ":" in source_set or "," in target_set or ":" in target_set:
+            return None
+        if source_set != source_uid:
+            return None
+        return target_set
 
     def set_flagged(self, folder: str, uid: str) -> None:
         def _flag() -> None:
@@ -166,3 +224,54 @@ class IMAPClient(AbstractContextManager["IMAPClient"]):
                 raise RuntimeError(f"Unable to expunge folder {folder}")
 
         self._run_with_retry("expunge", _expunge)
+
+    def delete_message(self, folder: str, uid: str) -> None:
+        def _uid_expunge() -> None:
+            assert self.connection is not None
+            status, _ = self.connection.select(folder)
+            if status != "OK":
+                raise RuntimeError(f"Unable to select folder {folder}")
+            pre_existing_deleted = self._search_deleted_uids()
+            if pre_existing_deleted and uid not in pre_existing_deleted:
+                raise RuntimeError(
+                    f"Refusing folder-level expunge in {folder}: other deleted messages already exist ({', '.join(pre_existing_deleted)})"
+                )
+            status, _ = self.connection.uid("store", uid, "+FLAGS.SILENT", "(\\Deleted)")
+            if status != "OK":
+                raise RuntimeError(f"Unable to mark message {uid} as deleted")
+            if self.supports_uidplus():
+                status, _ = self.connection.uid("expunge", uid)
+                if status != "OK":
+                    raise RuntimeError(f"Unable to UID EXPUNGE message {uid} in {folder}")
+                return
+            if not self.mailbox.imap_allow_folder_expunge:
+                raise RuntimeError(
+                    f"Server for {self.mailbox.imap_user} does not support UIDPLUS and folder-level expunge is disabled"
+                )
+            deleted_uids = self._search_deleted_uids()
+            if deleted_uids != [uid]:
+                self._clear_deleted_flag(uid)
+                raise RuntimeError(
+                    f"Refusing folder-level expunge in {folder}: deleted set is {deleted_uids}, expected only [{uid}]"
+                )
+            status, _ = self.connection.expunge()
+            if status != "OK":
+                raise RuntimeError(f"Unable to expunge folder {folder}")
+
+        self._run_with_retry("delete_message", _uid_expunge)
+
+    def _search_deleted_uids(self) -> list[str]:
+        assert self.connection is not None
+        status, data = self.connection.uid("search", None, "DELETED")
+        if status != "OK" or not data:
+            raise RuntimeError("Unable to search deleted messages")
+        deleted = data[0]
+        if not deleted:
+            return []
+        return [item.decode("utf-8", errors="ignore") for item in deleted.split()]
+
+    def _clear_deleted_flag(self, uid: str) -> None:
+        assert self.connection is not None
+        status, _ = self.connection.uid("store", uid, "-FLAGS.SILENT", "(\\Deleted)")
+        if status != "OK":
+            raise RuntimeError(f"Unable to clear deleted flag for message {uid}")

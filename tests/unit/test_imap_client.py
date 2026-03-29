@@ -7,14 +7,29 @@ from mail_ai_agent.imap_client import IMAPClient
 
 
 class FakeFlakyConnection:
-    def __init__(self, *, fail_copy_times: int = 0, fail_search_times: int = 0, search_uids: bytes = b"42") -> None:
+    def __init__(
+        self,
+        *,
+        fail_copy_times: int = 0,
+        fail_search_times: int = 0,
+        search_uids: bytes = b"42",
+        deleted_search_uids: bytes = b"",
+    ) -> None:
         self.fail_copy_times = fail_copy_times
         self.fail_search_times = fail_search_times
         self.search_uids = search_uids
+        self.deleted_search_uids = deleted_search_uids
         self.copy_attempts = 0
         self.search_attempts = 0
         self.search_args: tuple | None = None
         self.fetch_args: list[tuple] = []
+        self.store_calls: list[tuple] = []
+        self.expunge_calls = 0
+        self.capabilities = {b"IMAP4REV1", b"UIDPLUS"}
+        self.responses: dict[str, tuple[str, list[bytes]]] = {
+            "UIDVALIDITY": ("UIDVALIDITY", [b"999"]),
+            "COPYUID": ("COPYUID", [b"999 42 142"]),
+        }
 
     def login(self, user: str, password: str) -> tuple[str, list[bytes]]:
         return ("OK", [b"logged-in"])
@@ -26,9 +41,7 @@ class FakeFlakyConnection:
         return ("OK", [b"1"])
 
     def response(self, code: str) -> tuple[str, list[bytes]] | None:
-        if code == "UIDVALIDITY":
-            return ("UIDVALIDITY", [b"999"])
-        return None
+        return self.responses.get(code)
 
     def uid(self, command: str, *args) -> tuple[str, list]:
         if command == "copy":
@@ -41,15 +54,21 @@ class FakeFlakyConnection:
             self.search_args = args
             if self.search_attempts <= self.fail_search_times:
                 raise imaplib.IMAP4.abort("search aborted")
+            if args == (None, "DELETED"):
+                return ("OK", [self.deleted_search_uids])
             return ("OK", [self.search_uids])
         if command == "fetch":
             self.fetch_args.append(args)
             return ("OK", [(b'1 (INTERNALDATE "26-Mar-2026 10:00:00 +0000")', b"Subject: Test\n\nBody")])
         if command == "store":
+            self.store_calls.append(args)
             return ("OK", [b"stored"])
+        if command == "expunge":
+            return ("OK", [b"expunged"])
         raise AssertionError(f"Unexpected command: {command}")
 
     def expunge(self) -> tuple[str, list[bytes]]:
+        self.expunge_calls += 1
         return ("OK", [b"expunged"])
 
 
@@ -126,3 +145,91 @@ def test_get_uidvalidity_reads_folder_metadata(monkeypatch) -> None:
         uidvalidity = client.get_uidvalidity("INBOX.AI-Review")
 
     assert uidvalidity == "999"
+
+
+def test_validate_routing_setup_requires_uidplus_or_explicit_override(monkeypatch) -> None:
+    mailbox = make_mailbox()
+    connection = FakeFlakyConnection()
+    connection.capabilities = {b"IMAP4REV1"}
+
+    monkeypatch.setattr("mail_ai_agent.imap_client.imaplib.IMAP4_SSL", lambda *_: connection)
+    monkeypatch.setattr("mail_ai_agent.imap_client.time.sleep", lambda _: None)
+
+    with IMAPClient(mailbox) as client:
+        try:
+            client.validate_routing_setup(
+                source_folder="INBOX.AI-Review",
+                target_folders=["INBOX.Questions"],
+                dry_run=False,
+            )
+        except RuntimeError as exc:
+            assert "UIDPLUS" in str(exc)
+        else:
+            raise AssertionError("Expected RuntimeError")
+
+
+def test_delete_message_uses_uid_expunge_when_supported(monkeypatch) -> None:
+    mailbox = make_mailbox()
+    connection = FakeFlakyConnection()
+
+    monkeypatch.setattr("mail_ai_agent.imap_client.imaplib.IMAP4_SSL", lambda *_: connection)
+    monkeypatch.setattr("mail_ai_agent.imap_client.time.sleep", lambda _: None)
+
+    with IMAPClient(mailbox) as client:
+        client.delete_message("INBOX.AI-Review", "42")
+
+
+def test_delete_message_refuses_folder_expunge_when_other_deleted_messages_exist(monkeypatch) -> None:
+    mailbox = make_mailbox().model_copy(update={"imap_allow_folder_expunge": True})
+    connection = FakeFlakyConnection(deleted_search_uids=b"41")
+    connection.capabilities = {b"IMAP4REV1"}
+
+    monkeypatch.setattr("mail_ai_agent.imap_client.imaplib.IMAP4_SSL", lambda *_: connection)
+    monkeypatch.setattr("mail_ai_agent.imap_client.time.sleep", lambda _: None)
+
+    with IMAPClient(mailbox) as client:
+        try:
+            client.delete_message("INBOX.AI-Review", "42")
+        except RuntimeError as exc:
+            assert "other deleted messages" in str(exc)
+        else:
+            raise AssertionError("Expected RuntimeError")
+
+    assert connection.store_calls == []
+    assert connection.expunge_calls == 0
+
+
+def test_delete_message_rolls_back_deleted_flag_when_deleted_set_changes(monkeypatch) -> None:
+    mailbox = make_mailbox().model_copy(update={"imap_allow_folder_expunge": True})
+    connection = FakeFlakyConnection(deleted_search_uids=b"42 41")
+    connection.capabilities = {b"IMAP4REV1"}
+
+    monkeypatch.setattr("mail_ai_agent.imap_client.imaplib.IMAP4_SSL", lambda *_: connection)
+    monkeypatch.setattr("mail_ai_agent.imap_client.time.sleep", lambda _: None)
+
+    with IMAPClient(mailbox) as client:
+        try:
+            client.delete_message("INBOX.AI-Review", "42")
+        except RuntimeError as exc:
+            assert "deleted set is" in str(exc)
+        else:
+            raise AssertionError("Expected RuntimeError")
+
+    assert connection.store_calls == [
+        ("42", "+FLAGS.SILENT", "(\\Deleted)"),
+        ("42", "-FLAGS.SILENT", "(\\Deleted)"),
+    ]
+    assert connection.expunge_calls == 0
+
+
+def test_copy_message_returns_target_uid_from_copyuid(monkeypatch) -> None:
+    mailbox = make_mailbox()
+    connection = FakeFlakyConnection()
+
+    monkeypatch.setattr("mail_ai_agent.imap_client.imaplib.IMAP4_SSL", lambda *_: connection)
+    monkeypatch.setattr("mail_ai_agent.imap_client.time.sleep", lambda _: None)
+
+    with IMAPClient(mailbox) as client:
+        target_uid = client.copy_message("INBOX.AI-Review", "42", "INBOX.Questions")
+
+    assert target_uid == "142"

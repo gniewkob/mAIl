@@ -35,6 +35,8 @@ python3 -m venv .venv
 3. Create `.env` from `.env.example` and fill in real values.
 4. For safer IMAP testing, create `.env.test` from `.env.test.example`.
 5. For multi-mailbox mode, copy `config/mailboxes.example.json` to a local manifest such as `config/mailboxes.local.json` and point `MAILBOXES_CONFIG_PATH` at that file.
+   Prefer `imap_pass_ref` over plaintext `imap_pass`. Supported refs:
+   `env:VAR_NAME`, `keychain:service/account`, `keychain:service:account`.
 
 ## Single-mailbox mode
 
@@ -71,32 +73,57 @@ cp .env.multi.test.example .env.multi.test
 cp config/mailboxes.example.json config/mailboxes.local.json
 ```
 
-Then update `.env.multi.test` so `MAILBOXES_CONFIG_PATH=config/mailboxes.local.json`, fill real credentials in the local manifest, and run:
+If you are starting from a manifest with plaintext `imap_pass`, migrate it first:
+
+```bash
+.venv/bin/python -m mail_ai_agent.manifest_secrets_cli \
+  --input config/mailboxes.local.json \
+  --output config/mailboxes.local.refs.json \
+  --mode env \
+  --sidecar-output output/mailboxes.local.secrets.sh
+```
+
+Then update `.env.multi.test` so `MAILBOXES_CONFIG_PATH=config/mailboxes.local.json`, configure secret refs for each mailbox, and run:
 
 ```bash
 .venv/bin/python -m mail_ai_agent.cli --env-file .env.multi.test --json
 ```
 
+Preflight the mailbox topology before enabling the worker:
+
+```bash
+.venv/bin/python -m mail_ai_agent.preflight_cli --env-file .env.multi.test
+```
+
+Production multi-mailbox mode uses the same manifest structure, but with mailbox-specific production folders such as `INBOX.AI-Review`, `INBOX.Other`, and `INBOX.Billing`.
+
 ## Runtime behavior
 
-- processed mail is moved with IMAP `copy -> mark_deleted -> expunge`
+- processed mail is moved with IMAP `copy -> delete_message`
 - deterministic complaint rules add `\\Flagged`
 - if copy succeeds but source cleanup fails, state is stored as `cleanup_pending` with action `move_copy_succeeded_cleanup_pending`
 - worker runs an automatic cleanup pass for `cleanup_pending` records before processing new candidates
 - `cleanup_cli` can still retry source-folder cleanup manually for pending records
+- startup preflight validates source and target folders before mailbox processing begins
 - cleanup pass verifies stored `UIDVALIDITY` before deleting from source; mismatches are skipped and logged
 - IMAP operations use retry and reconnect with `IMAP_MAX_RETRIES` and `IMAP_RETRY_BACKOFF_SECONDS`
+- source deletion prefers IMAP `UID EXPUNGE`; folder-level `EXPUNGE` is disabled by default and requires explicit `IMAP_ALLOW_FOLDER_EXPUNGE=true`
+- when folder-level `EXPUNGE` is used, the worker now refuses to proceed if the source folder already contains other `\\Deleted` messages and aborts if the deleted set is not exactly the current message
 - candidate selection is configurable with `IMAP_SEARCH_CRITERION` and capped by `IMAP_FETCH_LIMIT`
 - `IMAP_SEARCH_CRITERION` is intentionally limited to a small safe whitelist: `ALL`, `UNSEEN`, `UNANSWERED`, `FLAGGED`, `UNSEEN UNANSWERED`, `UNSEEN FLAGGED`
 - fetched candidates now carry IMAP `UIDVALIDITY` into persisted workflow state
 - state stores both a message fingerprint and a content fingerprint; content fingerprint is used only as fallback deduplication when `Message-ID` is missing
+- state stores `target_uid` when the IMAP server returns `COPYUID`, which improves post-copy recovery visibility
 - `DRY_RUN=true` is a simulation mode: no IMAP mutation, no terminal SQLite state, no draft files
 - cleanup candidate selection now targets only explicit `cleanup_pending` records; legacy cleanup heuristics are no longer part of the main runtime path
+- `LLM_FAILURE_ROUTE_TO_UNCERTAIN=true` routes LLM outages or invalid model output to `INBOX.AI-Uncertain` state instead of silently exhausting retries
+- audit logs redact direct PII fields by default; set `AUDIT_REDACT_PII=false` only for tightly controlled debugging
 
 ## Operational assumptions
 
-- `INBOX.AI-Review` should be treated as a worker-owned source folder during live pilot.
-- Do not leave unrelated `\Deleted` messages in the source folder.
+- `INBOX.AI-Review` should be treated as a worker-owned source folder in production.
+- Prefer IMAP servers with `UIDPLUS`; use `IMAP_ALLOW_FOLDER_EXPUNGE=true` only when the source folder is exclusively owned by this worker.
+- The current production host on `mail0.mydevil.net` does not advertise `UIDPLUS`; the active multi-mailbox manifest therefore sets `imap_allow_folder_expunge: true` per mailbox as an explicit operational override after preflight verification.
 - Do not run multiple workers or manual IMAP cleanup flows against the same source folder at the same time.
 - `IMAP_SEARCH_CRITERION=UNSEEN` is the recommended pilot setting. `ALL` is supported, but paired with a low `IMAP_FETCH_LIMIT` it can hide backlog behavior.
 
@@ -114,24 +141,74 @@ Full structured report:
 .venv/bin/python -m mail_ai_agent.report_cli --state-db data/state.sqlite --audit-log logs/audit.jsonl
 ```
 
+Multi-mailbox production status:
+
+```bash
+.venv/bin/python -m mail_ai_agent.status_cli --state-db data/multi-prod-state.sqlite --audit-log logs/multi-prod-audit.jsonl --json
+```
+
+Multi-mailbox production report:
+
+```bash
+.venv/bin/python -m mail_ai_agent.report_cli --state-db data/multi-prod-state.sqlite --audit-log logs/multi-prod-audit.jsonl
+```
+
+Production healthcheck:
+
+```bash
+.venv/bin/python -m mail_ai_agent.healthcheck_cli \
+  --state-db data/multi-prod-state.sqlite \
+  --audit-log logs/multi-prod-audit.jsonl \
+  --stdout-log logs/launchd-multi-prod-stdout.log \
+  --stderr-log logs/launchd-multi-prod-stderr.log
+```
+
 Manual cleanup preview:
 
 ```bash
 .venv/bin/python -m mail_ai_agent.cleanup_cli
 ```
 
-Apply cleanup and expunge:
+Apply cleanup:
 
 ```bash
-.venv/bin/python -m mail_ai_agent.cleanup_cli --apply --expunge
+.venv/bin/python -m mail_ai_agent.cleanup_cli --apply
 ```
 
-`cleanup_cli --expunge` and the automatic cleanup pass use folder-level IMAP `EXPUNGE`. This assumes the worker owns cleanup behavior for the source folder and there are no unrelated `\Deleted` messages left there by another process.
+PII scrub for existing state and drafts:
+
+```bash
+.venv/bin/python -m mail_ai_agent.maintenance_cli \
+  --state-db data/multi-prod-state.sqlite \
+  --scrub-state-pii
+
+.venv/bin/python -m mail_ai_agent.maintenance_cli \
+  --draft-dir drafts/multi-prod-pending \
+  --scrub-draft-pii
+```
 
 ## Bootstrap
 
 ```bash
 bash scripts/bootstrap.sh
+```
+
+Production helpers:
+
+```bash
+bash scripts/prod_healthcheck.sh
+bash scripts/prod_canary.sh
+bash scripts/prod_alert.sh
+```
+
+Quality helpers:
+
+```bash
+.venv/bin/python -m mail_ai_agent.quality_report_cli \
+  --audit-log logs/multi-prod-audit.jsonl
+
+.venv/bin/python -m mail_ai_agent.golden_set_cli \
+  tests/synthetic_data/golden_batch_001.json
 ```
 
 ## Tests

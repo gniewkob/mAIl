@@ -13,7 +13,6 @@ def main() -> None:
     parser.add_argument("--env-file", default=None, help="Optional env file path")
     parser.add_argument("--mailbox-id", default=None, help="Optional mailbox id when using multi-mailbox config")
     parser.add_argument("--apply", action="store_true", help="Actually mark source messages as deleted")
-    parser.add_argument("--expunge", action="store_true", help="Expunge the source folder after deletion")
     parser.add_argument("--limit", type=int, default=None, help="Optional limit of candidates to process")
     args = parser.parse_args()
 
@@ -36,7 +35,6 @@ def main() -> None:
         "mailbox_user": mailbox.imap_user,
         "source_folder": mailbox.imap_source_folder,
         "apply": args.apply,
-        "expunge": args.expunge,
         "count": len(candidates),
         "uids": [record.imap_uid for record in candidates if record.imap_uid],
     }
@@ -46,14 +44,17 @@ def main() -> None:
         return
 
     with IMAPClient(mailbox) as imap:
+        imap.validate_routing_setup(
+            source_folder=mailbox.imap_source_folder,
+            target_folders=[],
+            dry_run=False,
+        )
         cleaned_record_ids: list[int] = []
         for record in candidates:
             if not record.imap_uid:
                 continue
-            imap.mark_deleted(mailbox.imap_source_folder, record.imap_uid)
+            imap.delete_message(mailbox.imap_source_folder, record.imap_uid)
             cleaned_record_ids.append(record.id)
-        if args.expunge and candidates:
-            imap.expunge(mailbox.imap_source_folder)
         for record_id in cleaned_record_ids:
             state.mark_cleanup_done(record_id)
 

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import os
 import sqlite3
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -13,7 +15,9 @@ class StateManager:
     def __init__(self, db_path: Path) -> None:
         self.db_path = db_path
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        _chmod_owner_only(self.db_path.parent)
         self._initialize()
+        _chmod_owner_only(self.db_path)
 
     def _connect(self) -> sqlite3.Connection:
         connection = sqlite3.connect(self.db_path)
@@ -36,7 +40,9 @@ class StateManager:
                     target_folder TEXT,
                     target_uid TEXT,
                     sender TEXT,
+                    sender_sha256 TEXT,
                     subject TEXT,
+                    subject_sha256 TEXT,
                     internaldate TEXT,
                     status TEXT NOT NULL,
                     category TEXT,
@@ -69,6 +75,10 @@ class StateManager:
                 conn.execute("ALTER TABLE email_processing_state ADD COLUMN mailbox_id TEXT NOT NULL DEFAULT 'default'")
             if "content_fingerprint" not in columns:
                 conn.execute("ALTER TABLE email_processing_state ADD COLUMN content_fingerprint TEXT")
+            if "sender_sha256" not in columns:
+                conn.execute("ALTER TABLE email_processing_state ADD COLUMN sender_sha256 TEXT")
+            if "subject_sha256" not in columns:
+                conn.execute("ALTER TABLE email_processing_state ADD COLUMN subject_sha256 TEXT")
             conn.execute("UPDATE email_processing_state SET mailbox_id = 'default' WHERE mailbox_id IS NULL OR mailbox_id = ''")
             conn.executescript(
                 """
@@ -141,7 +151,9 @@ class StateManager:
         imap_uid: str,
         uidvalidity: str | None = None,
         sender: str,
+        sender_sha256: str | None = None,
         subject: str,
+        subject_sha256: str | None = None,
         source_folder: str,
         internaldate: str | None,
         worker_id: str,
@@ -187,8 +199,8 @@ class StateManager:
                 conn.execute(
                     """
                     UPDATE email_processing_state
-                    SET status = ?, imap_uid = ?, uidvalidity = ?, source_folder = ?, sender = ?, subject = ?,
-                        content_fingerprint = ?,
+                    SET status = ?, imap_uid = ?, uidvalidity = ?, source_folder = ?, sender = ?, sender_sha256 = ?,
+                        subject = ?, subject_sha256 = ?, content_fingerprint = ?,
                         internaldate = ?, processing_started_at = ?, lock_expires_at = ?,
                         lock_owner = ?, attempt_count = ?, updated_at = ?
                     WHERE id = ?
@@ -199,7 +211,9 @@ class StateManager:
                         uidvalidity,
                         source_folder,
                         sender,
+                        sender_sha256 or _hash_value(sender),
                         subject,
+                        subject_sha256 or _hash_value(subject),
                         content_fingerprint,
                         internaldate,
                         now.isoformat(),
@@ -220,10 +234,11 @@ class StateManager:
             cursor = conn.execute(
                 """
                 INSERT INTO email_processing_state (
-                    mailbox_id, message_id, fingerprint, content_fingerprint, imap_uid, uidvalidity, source_folder, sender, subject, internaldate,
+                    mailbox_id, message_id, fingerprint, content_fingerprint, imap_uid, uidvalidity, source_folder,
+                    sender, sender_sha256, subject, subject_sha256, internaldate,
                     status, processing_started_at, lock_expires_at, lock_owner, attempt_count,
                     created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     mailbox_id,
@@ -234,7 +249,9 @@ class StateManager:
                     uidvalidity,
                     source_folder,
                     sender,
+                    sender_sha256 or _hash_value(sender),
                     subject,
+                    subject_sha256 or _hash_value(subject),
                     internaldate,
                     WorkflowStatus.PROCESSING.value,
                     now.isoformat(),
@@ -262,6 +279,7 @@ class StateManager:
         category: str,
         confidence: float | None,
         target_folder: str,
+        target_uid: str | None = None,
         action_taken: str,
         draft_path: str | None = None,
         rule_hit: str | None = None,
@@ -274,6 +292,7 @@ class StateManager:
             category=category,
             confidence=confidence,
             target_folder=target_folder,
+            target_uid=target_uid,
             action_taken=action_taken,
             draft_path=draft_path,
             error_message=None,
@@ -283,14 +302,25 @@ class StateManager:
             model_latency_ms=model_latency_ms,
         )
 
-    def mark_uncertain(self, record_id: int, *, category: str | None, confidence: float | None, error_message: str | None = None) -> None:
+    def mark_uncertain(
+        self,
+        record_id: int,
+        *,
+        category: str | None,
+        confidence: float | None,
+        target_folder: str | None = None,
+        target_uid: str | None = None,
+        action_taken: str = "route_uncertain",
+        error_message: str | None = None,
+    ) -> None:
         self._update_terminal(
             record_id,
             status=WorkflowStatus.UNCERTAIN,
             category=category,
             confidence=confidence,
-            target_folder=None,
-            action_taken="route_uncertain",
+            target_folder=target_folder,
+            target_uid=target_uid,
+            action_taken=action_taken,
             draft_path=None,
             error_message=error_message,
             last_error_type=None,
@@ -306,6 +336,7 @@ class StateManager:
             category=None,
             confidence=None,
             target_folder=None,
+            target_uid=None,
             action_taken="failed",
             draft_path=None,
             error_message=error_message,
@@ -322,6 +353,7 @@ class StateManager:
         category: str,
         confidence: float | None,
         target_folder: str,
+        target_uid: str | None = None,
         draft_path: str | None = None,
         rule_hit: str | None = None,
         model_name: str | None = None,
@@ -335,6 +367,7 @@ class StateManager:
             category=category,
             confidence=confidence,
             target_folder=target_folder,
+            target_uid=target_uid,
             action_taken=MOVE_CLEANUP_PENDING_ACTION,
             draft_path=draft_path,
             error_message=error_message,
@@ -447,6 +480,7 @@ class StateManager:
         category: str | None,
         confidence: float | None,
         target_folder: str | None,
+        target_uid: str | None,
         action_taken: str,
         draft_path: str | None,
         error_message: str | None,
@@ -460,7 +494,7 @@ class StateManager:
             conn.execute(
                 """
                 UPDATE email_processing_state
-                SET status = ?, category = ?, confidence = ?, target_folder = ?, action_taken = ?,
+                SET status = ?, category = ?, confidence = ?, target_folder = ?, target_uid = ?, action_taken = ?,
                     draft_path = ?, error_message = ?, last_error_at = ?, last_error_type = ?,
                     processing_started_at = NULL, lock_expires_at = NULL, lock_owner = NULL,
                     rule_hit = ?, model_name = ?, model_latency_ms = ?, updated_at = ?
@@ -471,6 +505,7 @@ class StateManager:
                     category,
                     confidence,
                     target_folder,
+                    target_uid,
                     action_taken,
                     draft_path,
                     error_message,
@@ -487,3 +522,17 @@ class StateManager:
     @staticmethod
     def _row_to_record(row: sqlite3.Row) -> EmailRecord:
         return EmailRecord.model_validate(dict(row))
+
+
+def _chmod_owner_only(path: Path) -> None:
+    try:
+        mode = 0o700 if path.is_dir() else 0o600
+        os.chmod(path, mode)
+    except OSError:
+        pass
+
+
+def _hash_value(value: str | None) -> str | None:
+    if value in (None, ""):
+        return None
+    return hashlib.sha256(str(value).encode("utf-8")).hexdigest()

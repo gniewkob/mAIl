@@ -4,7 +4,7 @@ import argparse
 import json
 from pathlib import Path
 
-from .maintenance import maintain_sqlite, prune_drafts, rotate_audit_log
+from .maintenance import maintain_sqlite, prune_drafts, rotate_audit_log, scrub_draft_pii, scrub_state_pii
 
 
 def main() -> None:
@@ -15,6 +15,8 @@ def main() -> None:
     parser.add_argument("--rotate-audit-max-bytes", type=int, default=0, help="Rotate audit log if size exceeds this threshold")
     parser.add_argument("--audit-backup-count", type=int, default=5, help="Number of rotated audit backups to keep")
     parser.add_argument("--prune-drafts-older-than-days", type=int, default=None, help="Delete draft files older than the given number of days")
+    parser.add_argument("--scrub-state-pii", action="store_true", help="Redact sender and subject in the SQLite state DB")
+    parser.add_argument("--scrub-draft-pii", action="store_true", help="Redact sender and subject in stored draft files")
     parser.add_argument("--vacuum-db", action="store_true", help="Run SQLite integrity check, checkpoint, and vacuum")
     args = parser.parse_args()
 
@@ -38,6 +40,14 @@ def main() -> None:
             older_than_days=args.prune_drafts_older_than_days,
         )
         payload["draft_prune"] = {"removed": result.removed, "kept": result.kept}
+
+    if args.scrub_state_pii:
+        result = scrub_state_pii(Path(args.state_db))
+        payload["state_scrub"] = {"updated_rows": result.updated_rows}
+
+    if args.scrub_draft_pii:
+        result = scrub_draft_pii(Path(args.draft_dir))
+        payload["draft_scrub"] = {"updated_files": result.updated_files}
 
     if args.vacuum_db:
         payload["sqlite"] = maintain_sqlite(Path(args.state_db))

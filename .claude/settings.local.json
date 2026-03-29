@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -m pytest tests/unit/test_rule_engine.py -v)",
+      "Bash(uv run:*)",
+      "Bash(mkdir -p ~/.config/superpowers/worktrees/mAIl)",
+      "Bash(git worktree:*)",
+      "Bash(.venv/bin/pip install:*)",
+      "Bash(.venv/bin/pytest -q)"
+    ]
+  }
+}

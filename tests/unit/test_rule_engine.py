@@ -22,6 +22,32 @@ def test_rule_engine_routes_billing_without_llm() -> None:
     assert decision.category == "billing"
 
 
+def test_rule_engine_routes_payment_reminder_without_llm() -> None:
+    parsed = ParsedEmail(
+        sender="Obsługa Płatności T-Mobile <obslugaPlatnosci1@t-mobile.pl>",
+        subject="Przypomnienie o terminie płatności",
+        normalized_body="To jest przypomnienie o terminie płatności za usługę.",
+    )
+
+    decision = evaluate_rules(parsed, make_settings())
+
+    assert decision.action == "skip_ai"
+    assert decision.category == "billing"
+
+
+def test_rule_engine_routes_missed_payment_without_llm() -> None:
+    parsed = ParsedEmail(
+        sender="Obsługa Płatności T-Mobile <obslugaPlatnosci1@t-mobile.pl>",
+        subject="Brak płatności w terminie",
+        normalized_body="Informujemy o braku płatności w terminie i prosimy o uregulowanie należności.",
+    )
+
+    decision = evaluate_rules(parsed, make_settings())
+
+    assert decision.action == "skip_ai"
+    assert decision.category == "billing"
+
+
 def test_rule_engine_routes_system_without_llm() -> None:
     parsed = ParsedEmail(sender="mailer-daemon@example.com", subject="Delivery Status Notification", normalized_body="")
 

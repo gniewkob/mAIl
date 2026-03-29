@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import os
 import re
+import subprocess
 from pathlib import Path
 from typing import Any, Literal
 
@@ -40,6 +42,7 @@ class MailboxConfig(BaseModel):
     imap_retry_backoff_seconds: float = 0.5
     imap_search_criterion: str = "ALL"
     imap_fetch_limit: int = 100
+    imap_allow_folder_expunge: bool = False
 
     imap_source_folder: str = "INBOX.AI-Review"
     imap_uncertain_folder: str = "INBOX.AI-Uncertain"
@@ -69,6 +72,7 @@ class MailboxConfig(BaseModel):
             imap_retry_backoff_seconds=settings.imap_retry_backoff_seconds,
             imap_search_criterion=settings.imap_search_criterion,
             imap_fetch_limit=settings.imap_fetch_limit,
+            imap_allow_folder_expunge=settings.imap_allow_folder_expunge,
             imap_source_folder=settings.imap_source_folder,
             imap_uncertain_folder=settings.imap_uncertain_folder,
             imap_appointments_folder=settings.imap_appointments_folder,
@@ -95,6 +99,7 @@ class Settings(BaseSettings):
     imap_retry_backoff_seconds: float = Field(default=0.5, alias="IMAP_RETRY_BACKOFF_SECONDS")
     imap_search_criterion: str = Field(default="ALL", alias="IMAP_SEARCH_CRITERION")
     imap_fetch_limit: int = Field(default=100, alias="IMAP_FETCH_LIMIT")
+    imap_allow_folder_expunge: bool = Field(default=False, alias="IMAP_ALLOW_FOLDER_EXPUNGE")
 
     imap_source_folder: str = Field(default="INBOX.AI-Review", alias="IMAP_SOURCE_FOLDER")
     imap_uncertain_folder: str = Field(default="INBOX.AI-Uncertain", alias="IMAP_UNCERTAIN_FOLDER")
@@ -119,6 +124,7 @@ class Settings(BaseSettings):
     max_body_chars: int = Field(default=12000, alias="MAX_BODY_CHARS")
     max_retries: int = Field(default=3, alias="MAX_RETRIES")
     processing_lease_seconds: int = Field(default=900, alias="PROCESSING_LEASE_SECONDS")
+    llm_failure_route_to_uncertain: bool = Field(default=True, alias="LLM_FAILURE_ROUTE_TO_UNCERTAIN")
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = Field(default="INFO", alias="LOG_LEVEL")
     dry_run: bool = Field(default=True, alias="DRY_RUN")
 
@@ -126,6 +132,8 @@ class Settings(BaseSettings):
     audit_log_path: Path = Field(default=Path("logs/audit.jsonl"), alias="AUDIT_LOG_PATH")
     draft_dir: Path = Field(default=Path("drafts/pending"), alias="DRAFT_DIR")
     worker_id: str = Field(default="mail-ai-worker-1", alias="WORKER_ID")
+    audit_redact_pii: bool = Field(default=True, alias="AUDIT_REDACT_PII")
+    state_redact_pii: bool = Field(default=True, alias="STATE_REDACT_PII")
 
     @field_validator("imap_search_criterion")
     @classmethod
@@ -157,19 +165,22 @@ class Settings(BaseSettings):
         return mailboxes
 
     def _normalize_mailbox(self, raw_mailbox: dict[str, Any]) -> MailboxConfig:
-        if "imap_user" not in raw_mailbox or "imap_pass" not in raw_mailbox:
-            raise ValueError("Each mailbox entry must include imap_user and imap_pass.")
+        if "imap_user" not in raw_mailbox:
+            raise ValueError("Each mailbox entry must include imap_user.")
+        if "imap_pass" not in raw_mailbox and "imap_pass_ref" not in raw_mailbox:
+            raise ValueError("Each mailbox entry must include imap_pass or imap_pass_ref.")
         mailbox_user = str(raw_mailbox["imap_user"])
         merged = {
             "mailbox_id": raw_mailbox.get("mailbox_id") or _default_mailbox_id(mailbox_user),
             "imap_host": raw_mailbox.get("imap_host") or self.imap_host,
             "imap_port": raw_mailbox.get("imap_port") or self.imap_port,
             "imap_user": mailbox_user,
-            "imap_pass": raw_mailbox["imap_pass"],
+            "imap_pass": _resolve_mailbox_secret(raw_mailbox, mailbox_user),
             "imap_max_retries": raw_mailbox.get("imap_max_retries") or self.imap_max_retries,
             "imap_retry_backoff_seconds": raw_mailbox.get("imap_retry_backoff_seconds") or self.imap_retry_backoff_seconds,
             "imap_search_criterion": raw_mailbox.get("imap_search_criterion") or self.imap_search_criterion,
             "imap_fetch_limit": raw_mailbox.get("imap_fetch_limit") or self.imap_fetch_limit,
+            "imap_allow_folder_expunge": raw_mailbox.get("imap_allow_folder_expunge", self.imap_allow_folder_expunge),
             "imap_source_folder": raw_mailbox.get("imap_source_folder") or self.imap_source_folder,
             "imap_uncertain_folder": raw_mailbox.get("imap_uncertain_folder") or self.imap_uncertain_folder,
             "imap_appointments_folder": raw_mailbox.get("imap_appointments_folder") or self.imap_appointments_folder,
@@ -182,3 +193,66 @@ class Settings(BaseSettings):
         if not merged["imap_host"]:
             raise ValueError(f"Mailbox '{merged['mailbox_id']}' has no IMAP host configured.")
         return MailboxConfig.model_validate(merged)
+
+
+def _resolve_mailbox_secret(raw_mailbox: dict[str, Any], mailbox_user: str) -> str:
+    if "imap_pass" in raw_mailbox:
+        return str(raw_mailbox["imap_pass"])
+
+    ref = str(raw_mailbox["imap_pass_ref"]).strip()
+    if not ref:
+        raise ValueError(f"Mailbox '{mailbox_user}' has empty imap_pass_ref.")
+    if ref.startswith("env:"):
+        env_name = ref.split(":", 1)[1].strip()
+        if not env_name:
+            raise ValueError(f"Mailbox '{mailbox_user}' has invalid env secret reference.")
+        secret = os.getenv(env_name)
+        if not secret:
+            raise ValueError(f"Mailbox '{mailbox_user}' secret env var '{env_name}' is not set.")
+        return secret
+    if ref.startswith("keychain:"):
+        service, account = _parse_keychain_ref(ref, mailbox_user)
+        return _read_keychain_secret(service, account, mailbox_user)
+    raise ValueError(
+        f"Mailbox '{mailbox_user}' uses unsupported imap_pass_ref '{ref}'. "
+        "Supported formats: env:VAR_NAME, keychain:service/account, keychain:service:account"
+    )
+
+
+def _parse_keychain_ref(ref: str, mailbox_user: str) -> tuple[str, str]:
+    payload = ref.split(":", 1)[1].strip()
+    if "/" in payload:
+        service, account = payload.split("/", 1)
+    elif ":" in payload:
+        service, account = payload.split(":", 1)
+    else:
+        service, account = payload, mailbox_user
+    service = service.strip()
+    account = account.strip()
+    if not service or not account:
+        raise ValueError(f"Mailbox '{mailbox_user}' has invalid keychain secret reference '{ref}'.")
+    return service, account
+
+
+def _read_keychain_secret(service: str, account: str, mailbox_user: str) -> str:
+    try:
+        result = subprocess.run(
+            ["security", "find-generic-password", "-w", "-s", service, "-a", account],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except FileNotFoundError as exc:
+        raise ValueError(
+            f"Mailbox '{mailbox_user}' requests keychain secret '{service}/{account}', but the 'security' CLI is unavailable."
+        ) from exc
+    except subprocess.CalledProcessError as exc:
+        stderr = exc.stderr.strip() or "unknown error"
+        raise ValueError(
+            f"Mailbox '{mailbox_user}' keychain secret '{service}/{account}' could not be read: {stderr}"
+        ) from exc
+
+    secret = result.stdout.strip()
+    if not secret:
+        raise ValueError(f"Mailbox '{mailbox_user}' keychain secret '{service}/{account}' is empty.")
+    return secret

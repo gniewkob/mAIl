@@ -67,6 +67,61 @@ def test_settings_load_mailboxes_from_manifest(tmp_path: Path) -> None:
     assert "secret-b" not in repr(mailboxes[1])
 
 
+def test_settings_load_mailboxes_from_env_secret_refs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    manifest = tmp_path / "mailboxes.json"
+    manifest.write_text(
+        json.dumps(
+            {
+                "mailboxes": [
+                    {
+                        "mailbox_id": "kontakt",
+                        "imap_user": "kontakt@example.com",
+                        "imap_pass_ref": "env:MAILBOX_SECRET_KONTAKT",
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("MAILBOX_SECRET_KONTAKT", "env-secret")
+
+    settings = Settings(
+        IMAP_HOST="imap.example.com",
+        MAILBOXES_CONFIG_PATH=manifest,
+    )
+
+    mailboxes = settings.load_mailboxes()
+
+    assert len(mailboxes) == 1
+    assert mailboxes[0].imap_pass.get_secret_value() == "env-secret"
+
+
+def test_settings_rejects_missing_env_secret_ref(tmp_path: Path) -> None:
+    manifest = tmp_path / "mailboxes.json"
+    manifest.write_text(
+        json.dumps(
+            {
+                "mailboxes": [
+                    {
+                        "mailbox_id": "kontakt",
+                        "imap_user": "kontakt@example.com",
+                        "imap_pass_ref": "env:MISSING_SECRET",
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    settings = Settings(
+        IMAP_HOST="imap.example.com",
+        MAILBOXES_CONFIG_PATH=manifest,
+    )
+
+    with pytest.raises(ValueError, match="MISSING_SECRET"):
+        settings.load_mailboxes()
+
+
 @pytest.mark.parametrize(
     "criterion",
     ["ALL", "UNSEEN", "UNANSWERED", "FLAGGED", "UNSEEN UNANSWERED", "UNSEEN FLAGGED"],

@@ -7,6 +7,21 @@ from .folder_mapper import category_to_folder
 from .schemas import ParsedEmail, RuleDecision
 
 BILLING_KEYWORDS = ("faktura", "invoice", "fv", "proforma")
+PAYMENT_REGEX = re.compile(
+    r"\b("
+    r"płatno(?:ść|ści|sci|scią|sci[aą])|"
+    r"termin(?:ie)? płatno(?:ści|sci)|"
+    r"brak płatno(?:ści|sci)|"
+    r"przypomnienie o terminie płatno(?:ści|sci)|"
+    r"rozliczen\w*|"
+    r"rachun\w*|"
+    r"opłat\w*|"
+    r"należno(?:ść|ści|sci)|"
+    r"platnosci@swiatlowodem\.pl|"
+    r"obslugaplatnosci"
+    r")\b",
+    flags=re.IGNORECASE,
+)
 SYSTEM_PATTERNS = ("mailer-daemon", "delivery status notification", "failure notice", "postmaster")
 COMPLAINT_REGEX = re.compile(
     r"\b("
@@ -46,6 +61,14 @@ def evaluate_rules(parsed_email: ParsedEmail, mailbox: MailboxConfig) -> RuleDec
             target_folder=category_to_folder("billing", mailbox),
             action="skip_ai",
             reason="billing keyword matched in subject",
+        )
+
+    if PAYMENT_REGEX.search(combined):
+        return RuleDecision(
+            category="billing",
+            target_folder=category_to_folder("billing", mailbox),
+            action="skip_ai",
+            reason="payment or billing pattern matched",
         )
 
     if any(pattern in combined for pattern in SYSTEM_PATTERNS):

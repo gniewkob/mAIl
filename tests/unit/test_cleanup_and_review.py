@@ -178,3 +178,37 @@ def test_review_report_builds_rows_and_csv(tmp_path: Path) -> None:
     assert summary["cleanup_pending"] == 1
     assert summary["drafts"] == 1
     assert csv_path.exists()
+
+
+def test_review_report_handles_redacted_audit_fields(tmp_path: Path) -> None:
+    audit_path = tmp_path / "audit.jsonl"
+    audit_path.write_text(
+        json.dumps(
+            {
+                "timestamp": "2026-03-26T10:00:00Z",
+                "mailbox_id": "inbox_a",
+                "mailbox_user": "a@example.com",
+                "message_id_sha256": "midhash",
+                "sender_sha256": "senderhash",
+                "subject_sha256": "subjecthash",
+                "status_after": "mailbox_failed",
+                "category": None,
+                "confidence": None,
+                "target_folder": None,
+                "action_taken": "mailbox_failed",
+                "draft_path_sha256": "drafthash",
+                "error": "boom",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    rows = build_review_rows(audit_path)
+    summary = summarize_review_rows(rows)
+
+    assert rows[0]["message_id"] == "sha256:midhash"
+    assert rows[0]["sender"] == "sha256:senderhash"
+    assert rows[0]["subject"] == "sha256:subjecthash"
+    assert rows[0]["draft_path"] == "sha256:drafthash"
+    assert summary["failed"] == 1
+    assert summary["drafts"] == 1

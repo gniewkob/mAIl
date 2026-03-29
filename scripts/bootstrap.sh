@@ -32,12 +32,23 @@ Bootstrap complete.
 
 Next safe steps:
 1. Copy .env.test.example to .env.test
-2. Fill IMAP credentials and confirm test folders only
+2. Fill IMAP credentials or secret refs and confirm test folders only
 3. Run:
+   .venv/bin/python -m mail_ai_agent.preflight_cli --env-file .env.test
+4. Then run:
    .venv/bin/python -m mail_ai_agent.cli --env-file .env.test --json
 
 Optional live checks:
 - RUN_LIVE_OLLAMA_TESTS=1 .venv/bin/pytest tests/integration/test_ollama_live.py -q
 - RUN_LIVE_IMAP_TESTS=1 LIVE_IMAP_HOST=... LIVE_IMAP_USER=... LIVE_IMAP_PASS=... LIVE_IMAP_SOURCE_FOLDER=INBOX.Test-AI-Review .venv/bin/pytest tests/integration/test_imap_live.py -q
+
+Production operations:
+- bash scripts/prod_healthcheck.sh
+- bash scripts/prod_canary.sh
+- bash scripts/prod_alert.sh
+
+Quality operations:
+- .venv/bin/python -m mail_ai_agent.quality_report_cli --audit-log logs/multi-prod-audit.jsonl
+- .venv/bin/python -m mail_ai_agent.golden_set_cli tests/synthetic_data/golden_batch_001.json
 
 EOF

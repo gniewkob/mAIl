@@ -9,6 +9,16 @@ from .reporting import load_audit_records
 from .state_manager import MOVE_CLEANUP_PENDING_ACTION
 
 
+def _display_value(record: dict[str, Any], field: str) -> str | None:
+    value = record.get(field)
+    if value not in (None, ""):
+        return value
+    hashed = record.get(f"{field}_sha256")
+    if hashed not in (None, ""):
+        return f"sha256:{hashed}"
+    return None
+
+
 def build_review_rows(audit_path: Path) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     for record in load_audit_records(audit_path):
@@ -17,15 +27,15 @@ def build_review_rows(audit_path: Path) -> list[dict[str, Any]]:
                 "timestamp": record.get("timestamp"),
                 "mailbox_id": record.get("mailbox_id"),
                 "mailbox_user": record.get("mailbox_user"),
-                "message_id": record.get("message_id"),
-                "sender": record.get("sender"),
-                "subject": record.get("subject"),
+                "message_id": _display_value(record, "message_id"),
+                "sender": _display_value(record, "sender"),
+                "subject": _display_value(record, "subject"),
                 "status_after": record.get("status_after"),
                 "category": record.get("category"),
                 "confidence": record.get("confidence"),
                 "target_folder": record.get("target_folder"),
                 "action_taken": record.get("action_taken"),
-                "draft_path": record.get("draft_path"),
+                "draft_path": _display_value(record, "draft_path"),
                 "error": record.get("error"),
             }
         )
@@ -60,7 +70,7 @@ def summarize_review_rows(rows: list[dict[str, Any]]) -> dict[str, int]:
     for row in rows:
         if row["status_after"] == "uncertain":
             summary["uncertain"] += 1
-        if row["status_after"] == "failed":
+        if row["status_after"] in {"failed", "mailbox_failed"}:
             summary["failed"] += 1
         if row["status_after"] == "simulated":
             summary["simulated"] += 1

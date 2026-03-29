@@ -1,0 +1,92 @@
+[
+  {
+    "message_id": "<golden-billing-001@local>",
+    "category_expected": "billing",
+    "target_folder_expected": "INBOX.Billing",
+    "status_expected": "processed",
+    "subject": "Przypomnienie o terminie płatności",
+    "from": "UNIQA <obsluga@uniqa.pl>",
+    "body": "Dzień dobry, wysyłamy przypomnienie o terminie płatności za polisę."
+  },
+  {
+    "message_id": "<golden-complaint-001@local>",
+    "category_expected": "complaint",
+    "target_folder_expected": "INBOX.Complaints",
+    "status_expected": "processed",
+    "subject": "Reklamacja po ostatniej wizycie",
+    "from": "Klientka <klientka@example.com>",
+    "body": "Dzień dobry, jestem niezadowolona z ostatniej usługi i chcę złożyć reklamację."
+  },
+  {
+    "message_id": "<golden-offer-001@local>",
+    "category_expected": "spam_or_offer",
+    "target_folder_expected": "INBOX.Other",
+    "status_expected": "processed",
+    "subject": "Oferta SEO dla salonu",
+    "from": "Agency Boost <agency@example.test>",
+    "body": "Dzień dobry, chcemy przedstawić ofertę SEO i reklam dla Państwa salonu."
+  },
+  {
+    "message_id": "<golden-question-001@local>",
+    "category_expected": "question",
+    "target_folder_expected": "INBOX.Questions",
+    "status_expected": "processed",
+    "subject": "Pytanie o cennik manicure hybrydowego",
+    "from": "Ewelina <ewelina@example.com>",
+    "body": "Dzień dobry, jaki jest aktualny cennik manicure hybrydowego?",
+    "llm_classification": {
+      "category": "question",
+      "priority": "medium",
+      "requires_reply": true,
+      "confidence": 0.91,
+      "summary": "Klient pyta o cennik manicure hybrydowego.",
+      "entities": {},
+      "draft_reply": "Dzień dobry, aktualny cennik manicure hybrydowego prześlemy w odpowiedzi.",
+      "reasoning_short": "To zwykłe pytanie ofertowe od klienta."
+    }
+  },
+  {
+    "message_id": "<golden-appointment-001@local>",
+    "category_expected": "appointment",
+    "target_folder_expected": "INBOX.Appointments",
+    "status_expected": "processed",
+    "subject": "Prośba o termin manicure w piątek",
+    "from": "Lena <lena@example.com>",
+    "body": "Dzień dobry, czy mają Państwo wolny termin na manicure w piątek po 15:00?",
+    "llm_classification": {
+      "category": "appointment",
+      "priority": "medium",
+      "requires_reply": true,
+      "confidence": 0.93,
+      "summary": "Klientka prosi o wolny termin na manicure.",
+      "entities": {
+        "requested_date": "piątek po 15:00",
+        "service": "manicure"
+      },
+      "draft_reply": "Dzień dobry, sprawdzimy dostępność terminu w piątek po 15:00 i wrócimy z potwierdzeniem.",
+      "reasoning_short": "Treść dotyczy prośby o rezerwację terminu."
+    }
+  },
+  {
+    "message_id": "<golden-uncertain-001@local>",
+    "category_expected": "appointment",
+    "target_folder_expected": "INBOX.AI-Uncertain",
+    "status_expected": "uncertain",
+    "subject": "Pytanie o termin i cenę zabiegu",
+    "from": "Paulina <paulina@example.com>",
+    "body": "Dzień dobry, chciałabym zapytać o termin i cenę zabiegu laminacji brwi w przyszłym tygodniu.",
+    "llm_classification": {
+      "category": "appointment",
+      "priority": "medium",
+      "requires_reply": true,
+      "confidence": 0.6,
+      "summary": "Klientka pyta jednocześnie o termin i cenę zabiegu.",
+      "entities": {
+        "requested_date": "przyszły tydzień",
+        "service": "laminacja brwi"
+      },
+      "draft_reply": null,
+      "reasoning_short": "Wiadomość jest częściowo terminowa, ale zawiera też pytanie ofertowe."
+    }
+  }
+]

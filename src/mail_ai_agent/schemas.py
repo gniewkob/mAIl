@@ -108,7 +108,9 @@ class EmailRecord(BaseModel):
     target_folder: str | None = None
     target_uid: str | None = None
     sender: str
+    sender_sha256: str | None = None
     subject: str
+    subject_sha256: str | None = None
     internaldate: str | None = None
     status: WorkflowStatus
     category: str | None = None
