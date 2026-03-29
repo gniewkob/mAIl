@@ -144,10 +144,6 @@ def compute_content_fingerprint(parsed_email: ParsedEmail) -> str:
     return hashlib.sha256(source.encode("utf-8")).hexdigest()
 
 
-def compute_fingerprint(parsed_email: ParsedEmail) -> str:
-    return compute_message_fingerprint(parsed_email)
-
-
 def _safe_part_content(part) -> str:
     try:
         content = part.get_content()
