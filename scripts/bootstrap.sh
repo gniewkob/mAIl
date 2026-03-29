@@ -46,6 +46,7 @@ Production operations:
 - bash scripts/prod_healthcheck.sh
 - bash scripts/prod_canary.sh
 - bash scripts/prod_alert.sh
+- bash scripts/prod_metrics.sh
 
 Quality operations:
 - .venv/bin/python -m mail_ai_agent.quality_report_cli --audit-log logs/multi-prod-audit.jsonl

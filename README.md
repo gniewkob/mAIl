@@ -199,6 +199,7 @@ Production helpers:
 bash scripts/prod_healthcheck.sh
 bash scripts/prod_canary.sh
 bash scripts/prod_alert.sh
+bash scripts/prod_metrics.sh
 ```
 
 Quality helpers:
@@ -210,6 +211,31 @@ Quality helpers:
 .venv/bin/python -m mail_ai_agent.golden_set_cli \
   tests/synthetic_data/golden_batch_001.json
 ```
+
+Metrics exporter:
+
+```bash
+.venv/bin/python -m mail_ai_agent.metrics_exporter \
+  --host 127.0.0.1 \
+  --port 9177 \
+  --state-db data/multi-prod-state.sqlite \
+  --audit-log logs/multi-prod-audit.jsonl \
+  --stdout-log logs/launchd-multi-prod-stdout.log \
+  --stderr-log logs/launchd-multi-prod-stderr.log
+```
+
+One-shot Prometheus output preview:
+
+```bash
+.venv/bin/python -m mail_ai_agent.metrics_exporter \
+  --state-db data/multi-prod-state.sqlite \
+  --audit-log logs/multi-prod-audit.jsonl \
+  --stdout-log logs/launchd-multi-prod-stdout.log \
+  --stderr-log logs/launchd-multi-prod-stderr.log \
+  --oneshot
+```
+
+For a persistent local exporter, load [com.mailai.metrics.prod.plist](/Users/gniewkob/Repos/priv/mAIl/com.mailai.metrics.prod.plist) and scrape `127.0.0.1:9177/metrics` from Prometheus.
 
 ## Tests
 
