@@ -125,3 +125,18 @@ def test_message_fingerprint_changes_when_date_changes_and_message_id_missing() 
 
     assert compute_message_fingerprint(parsed_first) != compute_message_fingerprint(parsed_second)
     assert compute_content_fingerprint(parsed_first) == compute_content_fingerprint(parsed_second)
+
+
+def test_fingerprint_stable_across_timezones():
+    from datetime import datetime, timezone, timedelta
+    from mail_ai_agent.email_parser import compute_message_fingerprint
+    from mail_ai_agent.schemas import ParsedEmail
+
+    utc = datetime(2024, 3, 31, 12, 0, 0, tzinfo=timezone.utc)
+    warsaw = utc.astimezone(timezone(timedelta(hours=2)))
+
+    def make(dt):
+        return ParsedEmail(message_id="<t@t>", sender="a@b.com", subject="s",
+                           plain_text_body="b", normalized_body="b", date=dt)
+
+    assert compute_message_fingerprint(make(utc)) == compute_message_fingerprint(make(warsaw))
