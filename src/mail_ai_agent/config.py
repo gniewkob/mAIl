@@ -133,6 +133,13 @@ class Settings(BaseSettings):
     audit_redact_pii: bool = Field(default=False, alias="AUDIT_REDACT_PII")
     state_redact_pii: bool = Field(default=False, alias="STATE_REDACT_PII")
 
+    smtp_host: str | None = Field(default=None, alias="SMTP_HOST")
+    smtp_port: int = Field(default=587, alias="SMTP_PORT")
+    smtp_user: str | None = Field(default=None, alias="SMTP_USER")
+    smtp_pass: SecretStr | None = Field(default=None, alias="SMTP_PASS")
+    smtp_from: str | None = Field(default=None, alias="SMTP_FROM")
+    admin_notify_email: str | None = Field(default=None, alias="ADMIN_NOTIFY_EMAIL")
+
     @field_validator("imap_search_criterion")
     @classmethod
     def validate_imap_search_criterion(cls, value: str) -> str:
