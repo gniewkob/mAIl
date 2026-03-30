@@ -23,7 +23,7 @@ Zasady:
 10. reasoning_short ma mieć jedno zdanie.
 
 Dozwolone wartości:
-- category: appointment, question, complaint, spam_or_offer, other
+- category: appointment, question, complaint, spam_or_offer, billing, system, other
 - priority: high, medium, low
 
 Wymagane pola JSON:
