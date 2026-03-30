@@ -140,3 +140,66 @@ def test_fingerprint_stable_across_timezones():
                            plain_text_body="b", normalized_body="b", date=dt)
 
     assert compute_message_fingerprint(make(utc)) == compute_message_fingerprint(make(warsaw))
+
+
+def test_html_only_email_extracts_text() -> None:
+    """HTML-only email should have non-empty plain_text_body derived from HTML."""
+    message = EmailMessage()
+    message["From"] = "a@b.com"
+    message["Subject"] = "Test"
+    message["Message-ID"] = "<t@t>"
+    message.add_alternative("<html><body><p>Hello World</p></body></html>", subtype="html")
+    result = parse_email(message.as_bytes(), make_settings())
+    assert "Hello World" in (result.plain_text_body or result.normalized_body or "")
+
+
+def test_missing_message_id_is_none() -> None:
+    """Email without Message-ID header should have message_id=None."""
+    message = EmailMessage()
+    message["From"] = "a@b.com"
+    message["Subject"] = "Test"
+    message.set_content("body")
+    result = parse_email(message.as_bytes(), make_settings())
+    assert result.message_id is None
+
+
+def test_body_truncated_at_max_body_chars() -> None:
+    """normalized_body should be capped at max_body_chars characters."""
+    settings = Settings(
+        IMAP_HOST="imap.example.com",
+        IMAP_USER="user@example.com",
+        IMAP_PASS="secret",
+        MAX_BODY_CHARS=10,
+    )
+    message = EmailMessage()
+    message["From"] = "a@b.com"
+    message["Subject"] = "Test"
+    message.set_content("A" * 500)
+    result = parse_email(message.as_bytes(), settings)
+    assert len(result.normalized_body) <= 10
+
+
+def test_encoded_word_subject_decoded() -> None:
+    """RFC 2047 encoded-word subject should be decoded to plain text."""
+    raw = (
+        b"From: a@b.com\r\n"
+        b"Subject: =?UTF-8?B?SGVsbG8gV29ybGQ=?=\r\n"
+        b"Message-ID: <t@t>\r\n"
+        b"\r\n"
+        b"body"
+    )
+    result = parse_email(raw, make_settings())
+    assert result.subject == "Hello World"
+
+
+def test_fingerprint_deterministic() -> None:
+    """Same email bytes parsed twice should produce the same message fingerprint."""
+    message = EmailMessage()
+    message["From"] = "a@b.com"
+    message["Subject"] = "Deterministic"
+    message["Message-ID"] = "<det@test>"
+    message.set_content("hello world")
+    raw = message.as_bytes()
+    r1 = parse_email(raw, make_settings())
+    r2 = parse_email(raw, make_settings())
+    assert compute_message_fingerprint(r1) == compute_message_fingerprint(r2)
