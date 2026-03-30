@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import sqlite3
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -155,7 +156,9 @@ def scrub_draft_pii(draft_dir: Path) -> DraftScrubResult:
             payload["subject"] = "[redacted]"
             changed = True
         if changed:
-            item.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-            _chmod_owner_only(item)
+            tmp = item.with_suffix(".tmp")
+            tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+            _chmod_owner_only(tmp)
+            os.replace(tmp, item)
             updated_files += 1
     return DraftScrubResult(updated_files=updated_files)

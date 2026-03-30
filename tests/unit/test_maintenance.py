@@ -245,6 +245,42 @@ def test_scrub_state_pii_preserves_sha256_hashes(tmp_path):
     )
 
 
+def test_scrub_draft_pii_uses_atomic_write(tmp_path, monkeypatch):
+    """scrub_draft_pii must write via tmp+os.replace, not direct write_text on the original file."""
+    import json
+    import os
+    from pathlib import Path
+    from mail_ai_agent.maintenance import scrub_draft_pii
+
+    draft_dir = tmp_path / "drafts"
+    draft_dir.mkdir()
+    draft_file = draft_dir / "test.json"
+    draft_file.write_text(json.dumps({
+        "sender": "alice@example.com",
+        "subject": "Hello",
+        "draft_reply": "Hi",
+    }), encoding="utf-8")
+
+    write_text_calls = []
+    original_write_text = Path.write_text
+
+    def tracking_write_text(self, *args, **kwargs):
+        write_text_calls.append(str(self))
+        return original_write_text(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "write_text", tracking_write_text)
+    scrub_draft_pii(draft_dir)
+
+    payload = json.loads(draft_file.read_text())
+    assert payload["sender"] == "[redacted]"
+    assert "sender_sha256" in payload
+
+    direct_writes_to_original = [p for p in write_text_calls if p == str(draft_file)]
+    assert not direct_writes_to_original, (
+        "scrub_draft_pii must not write directly to the original draft file — use tmp+os.replace"
+    )
+
+
 def test_scrub_draft_pii_redacts_sender_and_subject(tmp_path: Path) -> None:
     draft = tmp_path / "draft.json"
     draft.write_text(
