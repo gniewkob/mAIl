@@ -273,6 +273,7 @@ def _process_mailbox(
                     latency_ms = None
                     if rule.action == "needs_llm":
                         classification, latency_ms = llm.classify(parsed)
+                        _refresh_worker_lock(state=state, settings=settings)
                         decision = decide_from_llm(classification, settings, mailbox)
                     else:
                         decision = decide_from_rule(rule)
@@ -366,6 +367,7 @@ def _process_mailbox(
                 if rule.action == "needs_llm":
                     try:
                         classification, latency_ms = llm.classify(parsed)
+                        _refresh_worker_lock(state=state, settings=settings)
                     except Exception as exc:
                         if settings.llm_failure_route_to_uncertain:
                             action_taken = _effective_action_taken(
