@@ -99,6 +99,15 @@ def test_manifest_secrets_cli_env_mode(tmp_path: Path) -> None:
     assert mailbox["imap_pass_ref"].startswith("env:")
 
 
+def test_write_manifest_applies_chmod_600(tmp_path) -> None:
+    import os, stat
+    from mail_ai_agent.manifest_secrets_cli import _write_manifest
+    out = tmp_path / "manifest.json"
+    _write_manifest(out, {"mailboxes": []})
+    mode = stat.S_IMODE(os.stat(out).st_mode)
+    assert mode == 0o600
+
+
 def test_sidecar_file_has_restricted_permissions(tmp_path: Path) -> None:
     input_m = tmp_path / "m.json"
     output_m = tmp_path / "m.out.json"

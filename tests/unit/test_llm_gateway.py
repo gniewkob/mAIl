@@ -118,3 +118,30 @@ def test_extract_json_raises_on_no_json() -> None:
 
     with pytest.raises(ValueError, match="No JSON object found"):
         _extract_json("no braces here")
+
+
+def test_classify_logs_raw_output_at_debug_on_parse_failure(monkeypatch, caplog) -> None:
+    import logging
+    import unittest.mock as mock
+    from mail_ai_agent.llm_gateway import LLMGateway
+    from mail_ai_agent.config import Settings
+    from mail_ai_agent.schemas import ParsedEmail
+
+    settings = Settings(
+        IMAP_HOST="localhost",
+        IMAP_USER="u",
+        IMAP_PASS="p",
+        MAX_RETRIES=1,
+    )
+    gateway = LLMGateway(settings)
+    parsed = ParsedEmail(sender="a@b.com", subject="test", normalized_body="body")
+
+    with mock.patch("requests.post") as mock_post:
+        mock_post.return_value.json.return_value = {"response": "not valid json at all XYZ"}
+        mock_post.return_value.raise_for_status.return_value = None
+        with caplog.at_level(logging.DEBUG, logger="mail_ai_agent.llm_gateway"):
+            try:
+                gateway.classify(parsed)
+            except RuntimeError:
+                pass
+    assert any("not valid json at all XYZ" in record.message for record in caplog.records)

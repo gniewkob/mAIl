@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import json
+import logging
 import time
 
 import requests
+
+LOGGER = logging.getLogger(__name__)
 
 from .config import Settings
 from .schemas import LLMClassification, ParsedEmail
@@ -62,6 +65,7 @@ class LLMGateway:
         last_error: Exception | None = None
         for attempt in range(1, self.settings.max_retries + 1):
             started = time.perf_counter()
+            raw_output: str = ""
             try:
                 response = requests.post(
                     f"{self.settings.ollama_url}/api/generate",
@@ -82,6 +86,7 @@ class LLMGateway:
                 return classification, latency_ms
             except (requests.RequestException, ValueError) as exc:
                 last_error = exc
+                LOGGER.debug("LLM raw output on failure (attempt %d): %s", attempt, raw_output)
                 if attempt < self.settings.max_retries:
                     time.sleep(min(0.5 * attempt, 5.0))
                 continue
