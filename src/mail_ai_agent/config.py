@@ -138,6 +138,7 @@ class Settings(BaseSettings):
     worker_id: str = Field(default="mail-ai-worker-1", alias="WORKER_ID")
     audit_redact_pii: bool = Field(default=True, alias="AUDIT_REDACT_PII")
     state_redact_pii: bool = Field(default=True, alias="STATE_REDACT_PII")
+    audit_fsync: bool = Field(default=True, alias="AUDIT_FSYNC")
 
     smtp_host: str | None = Field(default=None, alias="SMTP_HOST")
     smtp_port: int = Field(default=587, alias="SMTP_PORT")

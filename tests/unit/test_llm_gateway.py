@@ -31,9 +31,7 @@ class DummyResponse:
 
 def test_extract_json_handles_wrapped_output() -> None:
     raw = 'Here is the result {"category":"question","priority":"medium","requires_reply":true,"confidence":0.8,"summary":"x","entities":{},"draft_reply":null,"reasoning_short":"y"} thanks'
-
     extracted = _extract_json(raw)
-
     assert extracted.startswith("{")
     assert extracted.endswith("}")
 
@@ -54,9 +52,7 @@ def test_llm_gateway_retries_and_returns_classification(monkeypatch) -> None:
     monkeypatch.setattr("mail_ai_agent.llm_gateway.requests.post", fake_post)
     gateway = LLMGateway(make_settings())
     parsed = ParsedEmail(sender="client@example.com", subject="Cena", normalized_body="Jaka jest cena?")
-
     classification, latency_ms = gateway.classify(parsed)
-
     assert calls["count"] == 2
     assert classification.category == "question"
     assert latency_ms >= 0
@@ -66,7 +62,6 @@ def test_normalize_classification_payload_accepts_empty_entities_list() -> None:
     payload = _normalize_classification_payload(
         '{"category":"question","priority":"medium","requires_reply":true,"confidence":0.8,"summary":"Klient pyta o cenę.","entities":[],"draft_reply":null,"reasoning_short":"Treść maila jest pytaniem."}'
     )
-
     assert payload["entities"] == {}
 
 
@@ -77,7 +72,6 @@ def test_llm_gateway_raises_after_retry_exhausted(monkeypatch) -> None:
     monkeypatch.setattr("mail_ai_agent.llm_gateway.requests.post", fake_post)
     gateway = LLMGateway(make_settings())
     parsed = ParsedEmail(sender="client@example.com", subject="Cena", normalized_body="Jaka jest cena?")
-
     try:
         gateway.classify(parsed)
     except RuntimeError as exc:
@@ -94,7 +88,6 @@ def test_prompt_template_contains_email_content_delimiters() -> None:
 
 def test_extract_json_handles_nested_objects() -> None:
     import json
-
     raw = '{"category": "question", "entities": {"name": "Jan"}, "other": "x"}'
     result = _extract_json(raw)
     parsed = json.loads(result)
@@ -104,8 +97,6 @@ def test_extract_json_handles_nested_objects() -> None:
 
 def test_extract_json_ignores_trailing_object() -> None:
     import json
-
-    # Model output with two JSON fragments — should return the first complete one
     raw = 'some prefix {"category": "question"} extra {"noise": true}'
     result = _extract_json(raw)
     parsed = json.loads(result)
@@ -115,16 +106,12 @@ def test_extract_json_ignores_trailing_object() -> None:
 
 def test_extract_json_raises_on_no_json() -> None:
     import pytest
-
     with pytest.raises(ValueError, match="No JSON object found"):
         _extract_json("no braces here")
 
 
 def test_classify_does_not_crash_on_curly_braces_in_body(monkeypatch) -> None:
     import unittest.mock as mock
-    from mail_ai_agent.llm_gateway import LLMGateway
-    from mail_ai_agent.config import Settings
-    from mail_ai_agent.schemas import ParsedEmail
 
     settings = Settings(
         IMAP_HOST="localhost",
@@ -139,7 +126,6 @@ def test_classify_does_not_crash_on_curly_braces_in_body(monkeypatch) -> None:
         normalized_body="Hello, your {item} is ready. Ref: {code}.",
     )
     good_response = '{"category": "question", "priority": "medium", "requires_reply": true, "confidence": 0.9, "summary": "order query", "entities": {}, "draft_reply": null, "reasoning_short": "customer asking about order"}'
-
     with mock.patch("requests.post") as mock_post:
         mock_post.return_value.json.return_value = {"response": good_response}
         mock_post.return_value.raise_for_status.return_value = None
@@ -150,9 +136,6 @@ def test_classify_does_not_crash_on_curly_braces_in_body(monkeypatch) -> None:
 def test_classify_logs_raw_output_at_debug_on_parse_failure(monkeypatch, caplog) -> None:
     import logging
     import unittest.mock as mock
-    from mail_ai_agent.llm_gateway import LLMGateway
-    from mail_ai_agent.config import Settings
-    from mail_ai_agent.schemas import ParsedEmail
 
     settings = Settings(
         IMAP_HOST="localhost",
@@ -162,7 +145,6 @@ def test_classify_logs_raw_output_at_debug_on_parse_failure(monkeypatch, caplog)
     )
     gateway = LLMGateway(settings)
     parsed = ParsedEmail(sender="a@b.com", subject="test", normalized_body="body")
-
     with mock.patch("requests.post") as mock_post:
         mock_post.return_value.json.return_value = {"response": "not valid json at all XYZ"}
         mock_post.return_value.raise_for_status.return_value = None
@@ -172,3 +154,11 @@ def test_classify_logs_raw_output_at_debug_on_parse_failure(monkeypatch, caplog)
             except RuntimeError:
                 pass
     assert any("not valid json at all XYZ" in record.message for record in caplog.records)
+
+
+def test_prompt_template_instructs_model_to_start_with_json() -> None:
+    from mail_ai_agent.llm_gateway import PROMPT_TEMPLATE
+    zasady_section = PROMPT_TEMPLATE.split("Zasady:")[1].split("Dozwolone")[0]
+    # Rule must instruct model to start response with JSON immediately
+    assert "Zacznij" in zasady_section
+    assert "JSON" in zasady_section or "klamrowego" in zasady_section

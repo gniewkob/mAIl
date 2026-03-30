@@ -161,7 +161,8 @@ class IMAPClient(AbstractContextManager["IMAPClient"]):
             status, data = self.connection.uid("search", None, *search_tokens)  # type: ignore[arg-type]
             if status != "OK":
                 raise RuntimeError("Unable to search folder")
-            all_uids = [uid for uid in data[0].split() if uid.isdigit()]
+            raw_uids = data[0] if data and data[0] is not None else b""
+            all_uids = [uid for uid in raw_uids.split() if uid.isdigit()]
             if self.mailbox.imap_fetch_limit == 0 and len(all_uids) > 500:
                 warnings.warn(
                     f"imap_fetch_limit=0 with {len(all_uids)} UIDs — consider setting a limit to avoid memory/bandwidth issues",

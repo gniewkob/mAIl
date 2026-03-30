@@ -13,9 +13,10 @@ from .utils import _chmod_owner_only
 class AuditLogger:
     REDACTED_FIELDS = {"message_id", "sender", "subject", "draft_path"}
 
-    def __init__(self, path: Path, *, redact_pii: bool = True) -> None:
+    def __init__(self, path: Path, *, redact_pii: bool = True, fsync: bool = True) -> None:
         self.path = path
         self.redact_pii = redact_pii
+        self._fsync = fsync
         self.path.parent.mkdir(parents=True, exist_ok=True)
         _chmod_owner_only(self.path.parent)
 
@@ -27,7 +28,8 @@ class AuditLogger:
         with self.path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(record, ensure_ascii=False) + "\n")
             handle.flush()
-            os.fsync(handle.fileno())
+            if self._fsync:
+                os.fsync(handle.fileno())
         _chmod_owner_only(self.path)
 
     def _sanitize_payload(self, payload: dict[str, Any]) -> dict[str, Any]:
