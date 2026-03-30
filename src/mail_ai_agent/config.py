@@ -191,6 +191,9 @@ class Settings(BaseSettings):
         mailbox_user = str(raw_mailbox["imap_user"])
 
         def _get(key: str, default: Any) -> Any:
+            # Returns the manifest value when present and non-None.
+            # Setting a key to null in JSON falls through to the Settings default
+            # — intentional: null means "inherit from global settings".
             value = raw_mailbox.get(key)
             return value if value is not None else default
 

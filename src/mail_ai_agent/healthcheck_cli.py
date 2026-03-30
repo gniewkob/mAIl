@@ -41,6 +41,7 @@ def build_health_payload(
     recent_audit_limit: int,
     recent_audit_max_age_minutes: int | None,
     max_uncertain: int,
+    max_llm_latency_ms: int | None = None,
 ) -> dict[str, object]:
     state = summarize_state(state_db)
     recent = _recent_records(audit_log, recent_audit_limit, max_age_minutes=recent_audit_max_age_minutes)
@@ -66,6 +67,15 @@ def build_health_payload(
         issues.append("recent cleanup_uidvalidity_mismatch present in audit log")
     if any("Refusing folder-level expunge" in str(record.get("error") or "") for record in recent):
         issues.append("recent folder-level expunge refusal present in audit log")
+
+    if max_llm_latency_ms is not None:
+        slow_records = [
+            r for r in recent
+            if isinstance(r.get("model_latency_ms"), (int, float))
+            and r["model_latency_ms"] > max_llm_latency_ms
+        ]
+        if slow_records:
+            issues.append(f"llm_latency_exceeded={len(slow_records)} records above {max_llm_latency_ms}ms")
 
     stderr_size = stderr_log.stat().st_size if stderr_log and stderr_log.exists() else 0
     stdout_size = stdout_log.stat().st_size if stdout_log and stdout_log.exists() else 0
@@ -102,6 +112,7 @@ def main() -> None:
         help="Only inspect audit records newer than this many minutes",
     )
     parser.add_argument("--max-uncertain", type=int, default=0, help="Maximum tolerated uncertain rows in state")
+    parser.add_argument("--max-llm-latency-ms", type=int, default=None, help="Flag if any recent LLM call exceeded this latency in ms")
     args = parser.parse_args()
 
     payload = build_health_payload(
@@ -112,6 +123,7 @@ def main() -> None:
         recent_audit_limit=args.recent_audit_limit,
         recent_audit_max_age_minutes=args.recent_audit_max_age_minutes,
         max_uncertain=args.max_uncertain,
+        max_llm_latency_ms=args.max_llm_latency_ms,
     )
     print(json.dumps(payload, ensure_ascii=False, indent=2))
     if not payload["ok"]:

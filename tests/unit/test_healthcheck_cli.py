@@ -157,3 +157,56 @@ def test_build_health_payload_ignores_old_audit_failures_outside_time_window(tmp
 
     assert payload["ok"] is True
     assert payload["issues"] == []
+
+
+def test_build_health_payload_flags_high_llm_latency(tmp_path: Path) -> None:
+    audit_log = tmp_path / "audit.jsonl"
+    audit_log.write_text(
+        json.dumps({
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "action_taken": "move_route_from_llm",
+            "status_after": "processed",
+            "model_latency_ms": 45000,
+        }) + "\n",
+        encoding="utf-8",
+    )
+
+    payload = build_health_payload(
+        state_db=tmp_path / "state.sqlite",
+        audit_log=audit_log,
+        stdout_log=None,
+        stderr_log=None,
+        recent_audit_limit=10,
+        recent_audit_max_age_minutes=None,
+        max_uncertain=5,
+        max_llm_latency_ms=30000,
+    )
+
+    assert payload["ok"] is False
+    assert any("llm_latency" in str(issue) for issue in payload["issues"])
+
+
+def test_build_health_payload_no_flag_below_llm_latency_threshold(tmp_path: Path) -> None:
+    audit_log = tmp_path / "audit.jsonl"
+    audit_log.write_text(
+        json.dumps({
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "action_taken": "move_route_from_llm",
+            "status_after": "processed",
+            "model_latency_ms": 500,
+        }) + "\n",
+        encoding="utf-8",
+    )
+
+    payload = build_health_payload(
+        state_db=tmp_path / "state.sqlite",
+        audit_log=audit_log,
+        stdout_log=None,
+        stderr_log=None,
+        recent_audit_limit=10,
+        recent_audit_max_age_minutes=None,
+        max_uncertain=5,
+        max_llm_latency_ms=30000,
+    )
+
+    assert not any("llm_latency" in str(issue) for issue in payload["issues"])
