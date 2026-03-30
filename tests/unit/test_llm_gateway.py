@@ -90,3 +90,31 @@ def test_prompt_template_contains_email_content_delimiters() -> None:
     from mail_ai_agent.llm_gateway import PROMPT_TEMPLATE
     assert "<email_content>" in PROMPT_TEMPLATE
     assert "</email_content>" in PROMPT_TEMPLATE
+
+
+def test_extract_json_handles_nested_objects() -> None:
+    import json
+
+    raw = '{"category": "question", "entities": {"name": "Jan"}, "other": "x"}'
+    result = _extract_json(raw)
+    parsed = json.loads(result)
+    assert parsed["entities"] == {"name": "Jan"}
+    assert parsed["other"] == "x"
+
+
+def test_extract_json_ignores_trailing_object() -> None:
+    import json
+
+    # Model output with two JSON fragments — should return the first complete one
+    raw = 'some prefix {"category": "question"} extra {"noise": true}'
+    result = _extract_json(raw)
+    parsed = json.loads(result)
+    assert "noise" not in parsed
+    assert parsed["category"] == "question"
+
+
+def test_extract_json_raises_on_no_json() -> None:
+    import pytest
+
+    with pytest.raises(ValueError, match="No JSON object found"):
+        _extract_json("no braces here")

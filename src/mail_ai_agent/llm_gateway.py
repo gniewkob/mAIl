@@ -83,20 +83,38 @@ class LLMGateway:
             except (requests.RequestException, ValueError) as exc:
                 last_error = exc
                 if attempt < self.settings.max_retries:
-                    time.sleep(0.5 * attempt)
+                    time.sleep(min(0.5 * attempt, 5.0))
                 continue
         raise RuntimeError(f"LLM classification failed after retries: {last_error}") from last_error
 
 
 def _extract_json(raw_output: str) -> str:
     raw_output = raw_output.strip()
-    if raw_output.startswith("{") and raw_output.endswith("}"):
-        return raw_output
     start = raw_output.find("{")
-    end = raw_output.rfind("}")
-    if start == -1 or end == -1:
+    if start == -1:
         raise ValueError("No JSON object found in model output")
-    return json.dumps(json.loads(raw_output[start : end + 1]), ensure_ascii=False)
+    depth = 0
+    in_string = False
+    escape_next = False
+    for i, ch in enumerate(raw_output[start:], start=start):
+        if escape_next:
+            escape_next = False
+            continue
+        if ch == "\\" and in_string:
+            escape_next = True
+            continue
+        if ch == '"':
+            in_string = not in_string
+            continue
+        if in_string:
+            continue
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                return json.dumps(json.loads(raw_output[start : i + 1]), ensure_ascii=False)
+    raise ValueError("No complete JSON object found in model output")
 
 
 def _normalize_classification_payload(raw_output: str) -> dict:
