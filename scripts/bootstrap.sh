@@ -5,13 +5,19 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
 echo "[1/5] ensuring virtual environment"
-if [[ ! -d ".venv" ]]; then
-  python3 -m venv .venv
+if ! command -v uv &>/dev/null; then
+    if [[ ! -d ".venv" ]]; then
+        python3 -m venv .venv
+    fi
 fi
 
 echo "[2/5] installing dependencies"
-.venv/bin/pip install -r requirements.txt
-.venv/bin/pip install -e .
+if command -v uv &>/dev/null; then
+    uv sync --locked --all-extras
+else
+    .venv/bin/pip install -r requirements.txt
+    .venv/bin/pip install -e ".[dev]"
+fi
 
 echo "[3/5] running unit test suite"
 .venv/bin/pytest -q
@@ -26,7 +32,7 @@ echo "[5/5] reporting current local state"
   --export-audit-csv output/test-audit.csv \
   --export-state-csv output/test-state.csv || true
 
-cat <<'EOF'
+cat <<'HEREDOC'
 
 Bootstrap complete.
 
@@ -52,4 +58,4 @@ Quality operations:
 - .venv/bin/python -m mail_ai_agent.quality_report_cli --audit-log logs/multi-prod-audit.jsonl
 - .venv/bin/python -m mail_ai_agent.golden_set_cli tests/synthetic_data/golden_batch_001.json
 
-EOF
+HEREDOC

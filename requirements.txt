@@ -2,5 +2,3 @@ pydantic>=2.7,<3
 pydantic-settings>=2.2,<3
 requests>=2.31,<3
 beautifulsoup4>=4.12,<5
-pytest>=8.0,<9
-
