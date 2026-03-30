@@ -1,14 +1,18 @@
 from __future__ import annotations
 
 import imaplib
+import re as _re
 import time
 from contextlib import AbstractContextManager
-from typing import Callable, TypeVar
+from typing import Callable, Generator, TypeVar
 
 from .config import MailboxConfig
 from .schemas import CandidateMessage
 
 T = TypeVar("T")
+
+_UID_RE = _re.compile(r"\bUID\s+(\d+)\b", _re.IGNORECASE)
+_INTERNALDATE_RE = _re.compile(r'INTERNALDATE\s+"([^"]+)"', _re.IGNORECASE)
 
 
 class IMAPClient(AbstractContextManager["IMAPClient"]):
@@ -90,32 +94,18 @@ class IMAPClient(AbstractContextManager["IMAPClient"]):
             status, data = self.connection.uid("search", None, *search_tokens)
             if status != "OK":
                 raise RuntimeError("Unable to search folder")
-
-            messages: list[CandidateMessage] = []
-            uids = data[0].split()
+            all_uids = data[0].split()
             if self.mailbox.imap_fetch_limit > 0:
-                uids = uids[-self.mailbox.imap_fetch_limit :]
-            for uid in uids:
-                status, fetched = self.connection.uid("fetch", uid, "(BODY.PEEK[] INTERNALDATE RFC822.HEADER)")
-                if status != "OK":
-                    continue
-                raw_bytes = b""
-                internaldate = None
-                for item in fetched:
-                    if isinstance(item, tuple):
-                        raw_bytes = item[1]
-                        metadata = item[0].decode("utf-8", errors="ignore")
-                        if 'INTERNALDATE "' in metadata:
-                            internaldate = metadata.split('INTERNALDATE "', 1)[1].split('"', 1)[0]
-                messages.append(
-                    CandidateMessage(
-                        uid=uid.decode(),
-                        uidvalidity=uidvalidity,
-                        internaldate=internaldate,
-                        raw_bytes=raw_bytes,
-                    )
-                )
-            return messages
+                all_uids = all_uids[-self.mailbox.imap_fetch_limit:]
+            if not all_uids:
+                return []
+            uid_set = b",".join(all_uids).decode()
+            status, fetched = self.connection.uid(
+                "fetch", uid_set, "(UID BODY.PEEK[] INTERNALDATE)"
+            )
+            if status != "OK":
+                raise RuntimeError("Unable to batch-fetch messages")
+            return list(_parse_batch_fetch_response(fetched, uidvalidity))
 
         return self._run_with_retry("fetch_candidates", _fetch)
 
@@ -166,3 +156,35 @@ class IMAPClient(AbstractContextManager["IMAPClient"]):
                 raise RuntimeError(f"Unable to expunge folder {folder}")
 
         self._run_with_retry("expunge", _expunge)
+
+
+def _parse_batch_fetch_response(
+    fetched: list,
+    uidvalidity: str | None,
+) -> Generator["CandidateMessage", None, None]:
+    for item in fetched:
+        if not isinstance(item, tuple) or len(item) < 2:
+            continue
+        metadata_raw = item[0]
+        raw_bytes = item[1]
+        if not isinstance(raw_bytes, bytes):
+            continue
+        metadata = (
+            metadata_raw.decode("utf-8", errors="ignore")
+            if isinstance(metadata_raw, bytes)
+            else str(metadata_raw)
+        )
+        uid_match = _UID_RE.search(metadata)
+        if not uid_match:
+            continue
+        uid = uid_match.group(1)
+        internaldate: str | None = None
+        date_match = _INTERNALDATE_RE.search(metadata)
+        if date_match:
+            internaldate = date_match.group(1)
+        yield CandidateMessage(
+            uid=uid,
+            uidvalidity=uidvalidity,
+            internaldate=internaldate,
+            raw_bytes=raw_bytes,
+        )
