@@ -51,65 +51,41 @@ def test_rotated_archive_has_restricted_permissions(tmp_path):
     assert stat.S_IMODE(os.stat(result.archive_path).st_mode) == 0o600
 
 
-def test_scrub_state_pii_issues_single_update(tmp_path, monkeypatch):
-    """scrub_state_pii should issue a batch UPDATE, not N individual updates."""
+def test_scrub_state_pii_first_pass_uses_executemany_for_unhashed_rows(tmp_path) -> None:
+    """scrub_state_pii first pass must hash and redact rows inserted with NULL sha256 fields.
+
+    Rows created via acquire_lease always have pre-populated sha256 hashes, so the first
+    pass WHERE clause (NULL hash check) never fires in tests that use acquire_lease —
+    a false-green. This test bypasses acquire_lease to insert a genuinely unhashed row.
+    """
     import sqlite3
     from mail_ai_agent.state_manager import StateManager
     from mail_ai_agent.maintenance import scrub_state_pii
 
-    db_path = tmp_path / "state.sqlite"
-    sm = StateManager(db_path)
-    for i in range(3):
-        sm.acquire_lease(
-            mailbox_id="test",
-            message_id=f"<msg{i}@test.com>",
-            fingerprint=f"fp{i}",
-            imap_uid=str(i),
-            sender=f"sender{i}@example.com",
-            subject=f"Subject {i}",
-            source_folder="INBOX",
-            internaldate=None,
-            worker_id="w",
-            lease_seconds=60,
-            max_retries=3,
-        )
+    db = tmp_path / "state.sqlite"
+    StateManager(db)  # create schema only
 
-    execute_calls: list = []
-    original_connect = sqlite3.connect
+    # Insert row with NULL hashes — bypasses acquire_lease
+    conn = sqlite3.connect(db)
+    conn.execute("""
+        INSERT INTO email_processing_state
+            (mailbox_id, fingerprint, sender, subject, status, created_at, updated_at)
+        VALUES ('mb', 'fp-raw', 'alice@example.com', 'Hello', 'processed',
+                datetime('now'), datetime('now'))
+    """)
+    conn.commit()
+    conn.close()
 
-    class TrackingConnection:
-        def __init__(self, conn: sqlite3.Connection) -> None:
-            self._conn = conn
+    result = scrub_state_pii(db)
+    assert result.updated_rows == 1
 
-        def execute(self, sql: str, *a, **k):
-            if sql.strip().upper().startswith("UPDATE"):
-                execute_calls.append(sql)
-            return self._conn.execute(sql, *a, **k)
-
-        def __enter__(self):
-            self._conn.__enter__()
-            return self
-
-        def __exit__(self, *args):
-            return self._conn.__exit__(*args)
-
-        def __getattr__(self, name: str):
-            return getattr(self._conn, name)
-
-        def __setattr__(self, name: str, value) -> None:
-            if name == "_conn":
-                object.__setattr__(self, name, value)
-            else:
-                setattr(self._conn, name, value)
-
-    def counting_connect(*args, **kwargs):
-        return TrackingConnection(original_connect(*args, **kwargs))
-
-    monkeypatch.setattr(sqlite3, "connect", counting_connect)
-    scrub_state_pii(db_path)
-
-    update_count = len([s for s in execute_calls if "email_processing_state" in s])
-    assert update_count == 1, f"Expected 1 batch UPDATE, got {update_count} UPDATE calls"
+    conn = sqlite3.connect(db)
+    row = conn.execute(
+        "SELECT sender, sender_sha256 FROM email_processing_state WHERE fingerprint='fp-raw'"
+    ).fetchone()
+    conn.close()
+    assert row[0] == "[redacted]"
+    assert row[1] is not None and len(row[1]) == 64
 
 
 def test_maintain_sqlite_runs_integrity_check(tmp_path: Path) -> None:

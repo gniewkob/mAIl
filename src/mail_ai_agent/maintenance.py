@@ -94,19 +94,23 @@ def scrub_state_pii(db_path: Path) -> StateScrubResult:
                OR (subject_sha256 IS NULL AND subject IS NOT NULL AND subject != '' AND subject != '[redacted]')
             """
         ).fetchall()
-        for row in rows_needing_hash:
-            sender = row["sender"]
-            subject = row["subject"]
-            sender_hash = _hash_value(sender) if sender not in (None, "", "[redacted]") else None
-            subject_hash = _hash_value(subject) if subject not in (None, "", "[redacted]") else None
-            conn.execute(
+        hash_tuples = [
+            (
+                _hash_value(row["sender"]) if row["sender"] not in (None, "", "[redacted]") else None,
+                _hash_value(row["subject"]) if row["subject"] not in (None, "", "[redacted]") else None,
+                row["id"],
+            )
+            for row in rows_needing_hash
+        ]
+        if hash_tuples:
+            conn.executemany(
                 """
                 UPDATE email_processing_state
                 SET sender_sha256 = COALESCE(sender_sha256, ?),
                     subject_sha256 = COALESCE(subject_sha256, ?)
                 WHERE id = ?
                 """,
-                (sender_hash, subject_hash, row["id"]),
+                hash_tuples,
             )
         # Second pass: batch redact PII in one SQL statement
         cursor = conn.execute(
