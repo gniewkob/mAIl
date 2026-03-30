@@ -170,24 +170,29 @@ class Settings(BaseSettings):
         if "imap_user" not in raw_mailbox or "imap_pass" not in raw_mailbox:
             raise ValueError("Each mailbox entry must include imap_user and imap_pass.")
         mailbox_user = str(raw_mailbox["imap_user"])
+
+        def _get(key: str, default: Any) -> Any:
+            value = raw_mailbox.get(key)
+            return value if value is not None else default
+
         merged = {
             "mailbox_id": raw_mailbox.get("mailbox_id") or _default_mailbox_id(mailbox_user),
-            "imap_host": raw_mailbox.get("imap_host") or self.imap_host,
-            "imap_port": raw_mailbox.get("imap_port") or self.imap_port,
+            "imap_host": _get("imap_host", self.imap_host),
+            "imap_port": _get("imap_port", self.imap_port),
             "imap_user": mailbox_user,
             "imap_pass": raw_mailbox["imap_pass"],
-            "imap_max_retries": raw_mailbox.get("imap_max_retries") or self.imap_max_retries,
-            "imap_retry_backoff_seconds": raw_mailbox.get("imap_retry_backoff_seconds") or self.imap_retry_backoff_seconds,
-            "imap_search_criterion": raw_mailbox.get("imap_search_criterion") or self.imap_search_criterion,
-            "imap_fetch_limit": raw_mailbox.get("imap_fetch_limit") or self.imap_fetch_limit,
-            "imap_source_folder": raw_mailbox.get("imap_source_folder") or self.imap_source_folder,
-            "imap_uncertain_folder": raw_mailbox.get("imap_uncertain_folder") or self.imap_uncertain_folder,
-            "imap_appointments_folder": raw_mailbox.get("imap_appointments_folder") or self.imap_appointments_folder,
-            "imap_questions_folder": raw_mailbox.get("imap_questions_folder") or self.imap_questions_folder,
-            "imap_complaints_folder": raw_mailbox.get("imap_complaints_folder") or self.imap_complaints_folder,
-            "imap_other_folder": raw_mailbox.get("imap_other_folder") or self.imap_other_folder,
-            "imap_billing_folder": raw_mailbox.get("imap_billing_folder") or self.imap_billing_folder,
-            "imap_system_folder": raw_mailbox.get("imap_system_folder") or self.imap_system_folder,
+            "imap_max_retries": _get("imap_max_retries", self.imap_max_retries),
+            "imap_retry_backoff_seconds": _get("imap_retry_backoff_seconds", self.imap_retry_backoff_seconds),
+            "imap_search_criterion": _get("imap_search_criterion", self.imap_search_criterion),
+            "imap_fetch_limit": _get("imap_fetch_limit", self.imap_fetch_limit),
+            "imap_source_folder": _get("imap_source_folder", self.imap_source_folder),
+            "imap_uncertain_folder": _get("imap_uncertain_folder", self.imap_uncertain_folder),
+            "imap_appointments_folder": _get("imap_appointments_folder", self.imap_appointments_folder),
+            "imap_questions_folder": _get("imap_questions_folder", self.imap_questions_folder),
+            "imap_complaints_folder": _get("imap_complaints_folder", self.imap_complaints_folder),
+            "imap_other_folder": _get("imap_other_folder", self.imap_other_folder),
+            "imap_billing_folder": _get("imap_billing_folder", self.imap_billing_folder),
+            "imap_system_folder": _get("imap_system_folder", self.imap_system_folder),
         }
         if not merged["imap_host"]:
             raise ValueError(f"Mailbox '{merged['mailbox_id']}' has no IMAP host configured.")
