@@ -16,7 +16,7 @@ def _recent_records(path: Path, limit: int, *, max_age_minutes: int | None) -> l
     records = load_audit_records(path)
     if max_age_minutes is not None and max_age_minutes >= 0:
         cutoff = datetime.now(timezone.utc) - timedelta(minutes=max_age_minutes)
-        records = [record for record in records if _record_timestamp(record) and _record_timestamp(record) >= cutoff]
+        records = [r for r in records if (ts := _record_timestamp(r)) and ts >= cutoff]
     if limit <= 0:
         return records
     return records[-limit:]

@@ -131,3 +131,19 @@ def test_tail_audit_records_missing_file_returns_empty(tmp_path: Path) -> None:
     """tail_audit_records returns [] for non-existent file."""
     result = tail_audit_records(tmp_path / "missing.jsonl", 5)
     assert result == []
+
+
+def test_load_audit_records_skips_malformed_lines(tmp_path: Path) -> None:
+    from mail_ai_agent.reporting import load_audit_records
+
+    log = tmp_path / "audit.jsonl"
+    log.write_text(
+        '{"timestamp": "2026-01-01T00:00:00+00:00", "action_taken": "ok"}\n'
+        "NOT VALID JSON\n"
+        '{"timestamp": "2026-01-01T00:01:00+00:00", "action_taken": "also_ok"}\n',
+        encoding="utf-8",
+    )
+    records = load_audit_records(log)
+    assert len(records) == 2
+    assert records[0]["action_taken"] == "ok"
+    assert records[1]["action_taken"] == "also_ok"
