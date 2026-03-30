@@ -15,6 +15,19 @@ T = TypeVar("T")
 _UID_RE = _re.compile(r"\bUID\s+(\d+)\b", _re.IGNORECASE)
 _INTERNALDATE_RE = _re.compile(r'INTERNALDATE\s+"([^"]+)"', _re.IGNORECASE)
 
+_AUTH_FAILURE_KEYWORDS = (
+    "AUTHENTICATIONFAILED",
+    "LOGIN FAILED",
+    "NO LOGIN",
+    "INVALID CREDENTIALS",
+    "AUTHENTICATION FAILED",
+    "[AUTHORIZATIONFAILED]",
+)
+
+
+class IMAPAuthError(RuntimeError):
+    """Raised when IMAP login is rejected due to authentication failure."""
+
 
 class IMAPClient(AbstractContextManager["IMAPClient"]):
     def __init__(self, mailbox: MailboxConfig) -> None:
@@ -34,7 +47,15 @@ class IMAPClient(AbstractContextManager["IMAPClient"]):
 
     def _connect_and_login(self) -> None:
         self.connection = imaplib.IMAP4_SSL(self.mailbox.imap_host, self.mailbox.imap_port)
-        self.connection.login(self.mailbox.imap_user, self.mailbox.imap_pass.get_secret_value())
+        try:
+            self.connection.login(self.mailbox.imap_user, self.mailbox.imap_pass.get_secret_value())
+        except imaplib.IMAP4.error as exc:
+            msg = str(exc).upper()
+            if any(keyword in msg for keyword in _AUTH_FAILURE_KEYWORDS):
+                raise IMAPAuthError(
+                    f"IMAP authentication failed for {self.mailbox.imap_user}: {exc}"
+                ) from exc
+            raise
 
     def _reconnect(self) -> None:
         if self.connection is not None:

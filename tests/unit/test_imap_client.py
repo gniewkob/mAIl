@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import imaplib
 
+import pytest
+
 from mail_ai_agent.config import MailboxConfig
 from mail_ai_agent.imap_client import IMAPClient
 
@@ -373,3 +375,38 @@ def test_fetch_candidates_limit_zero_includes_all_uids():
     uid_set_arg = fetch_call_args[1]
     for uid in ["1", "2", "3", "4", "5"]:
         assert uid in uid_set_arg, f"UID {uid} missing from FETCH with limit=0"
+
+
+def test_connect_raises_imap_auth_error_on_auth_failure(monkeypatch) -> None:
+    import imaplib as _imaplib
+    from mail_ai_agent.imap_client import IMAPAuthError
+
+    class FakeAuthFailConnection:
+        def login(self, user: str, password: str) -> None:
+            raise _imaplib.IMAP4.error("AUTHENTICATIONFAILED bad credentials")
+
+        def logout(self) -> tuple[str, list[bytes]]:
+            return ("BYE", [b"logout"])
+
+    monkeypatch.setattr("mail_ai_agent.imap_client.imaplib.IMAP4_SSL", lambda host, port: FakeAuthFailConnection())
+    client = IMAPClient(make_mailbox())
+    with pytest.raises(IMAPAuthError, match="IMAP authentication failed"):
+        client._connect_and_login()
+
+
+def test_connect_reraises_non_auth_imap_error(monkeypatch) -> None:
+    import imaplib as _imaplib
+    from mail_ai_agent.imap_client import IMAPAuthError
+
+    class FakeGenericErrorConnection:
+        def login(self, user: str, password: str) -> None:
+            raise _imaplib.IMAP4.error("BAD unexpected command")
+
+        def logout(self) -> tuple[str, list[bytes]]:
+            return ("BYE", [b"logout"])
+
+    monkeypatch.setattr("mail_ai_agent.imap_client.imaplib.IMAP4_SSL", lambda host, port: FakeGenericErrorConnection())
+    client = IMAPClient(make_mailbox())
+    with pytest.raises(_imaplib.IMAP4.error):
+        client._connect_and_login()
+    # Must NOT be wrapped in IMAPAuthError

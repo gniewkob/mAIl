@@ -635,3 +635,35 @@ def test_process_inbox_dry_run_audit_log_redacts_pii(monkeypatch, tmp_path: Path
         assert sha_key in payload, f"Expected '{sha_key}' in audit log"
         assert isinstance(payload[sha_key], str) and len(payload[sha_key]) == 64, \
             f"Expected 64-char sha256 hex for '{sha_key}', got {payload.get(sha_key)!r}"
+
+
+class FakeAuthFailingIMAPClient:
+    def __init__(self, mailbox) -> None:
+        pass
+
+    def __enter__(self) -> "FakeAuthFailingIMAPClient":
+        from mail_ai_agent.imap_client import IMAPAuthError
+        raise IMAPAuthError("IMAP authentication failed for user@example.com: AUTHENTICATIONFAILED")
+
+    def __exit__(self, exc_type, exc, tb) -> None:
+        return None
+
+
+def test_process_inbox_auth_failure_sets_flag_and_logs_critical(monkeypatch, tmp_path: Path) -> None:
+    from mail_ai_agent.main import process_inbox
+
+    monkeypatch.setattr("mail_ai_agent.main.IMAPClient", FakeAuthFailingIMAPClient)
+    monkeypatch.setattr("mail_ai_agent.main.LLMGateway", FakeLLMGateway)
+    settings = make_settings(tmp_path)
+
+    report = process_inbox(settings)
+
+    assert report.imap_auth_failures == 1
+    assert report.mailbox_reports[0].imap_auth_failed is True
+
+    audit_lines = (tmp_path / "audit.jsonl").read_text(encoding="utf-8").splitlines()
+    auth_lines = [line for line in audit_lines if '"imap_auth_failed"' in line]
+    assert len(auth_lines) == 1
+    payload = json.loads(auth_lines[0])
+    assert payload["action_taken"] == "imap_auth_failed"
+    assert payload["level"] == "CRITICAL"
