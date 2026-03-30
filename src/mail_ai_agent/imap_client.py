@@ -133,7 +133,7 @@ class IMAPClient(AbstractContextManager["IMAPClient"]):
             status, data = self.connection.uid("search", None, *search_tokens)
             if status != "OK":
                 raise RuntimeError("Unable to search folder")
-            all_uids = data[0].split()
+            all_uids = [uid for uid in data[0].split() if uid.isdigit()]
             if self.mailbox.imap_fetch_limit > 0:
                 all_uids = all_uids[-self.mailbox.imap_fetch_limit:]
             if not all_uids:
@@ -239,7 +239,7 @@ class IMAPClient(AbstractContextManager["IMAPClient"]):
                     f"Server for {self.mailbox.imap_user} does not support UIDPLUS and folder-level expunge is disabled"
                 )
             deleted_uids = self._search_deleted_uids()
-            if deleted_uids != [uid]:
+            if set(deleted_uids) != {uid}:
                 self._clear_deleted_flag(uid)
                 raise RuntimeError(
                     f"Refusing folder-level expunge in {folder}: deleted set is {deleted_uids}, expected only [{uid}]"
