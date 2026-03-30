@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import logging
 from time import perf_counter
 
@@ -14,6 +13,7 @@ from .llm_gateway import LLMGateway
 from .rule_engine import evaluate_rules
 from .schemas import LeaseAcquireResult, MailboxProcessingReport, ParsedEmail, ProcessingReport, WorkflowStatus
 from .state_manager import MOVE_CLEANUP_PENDING_ACTION, StateManager
+from .utils import _hash_value
 
 
 LOGGER = logging.getLogger(__name__)
@@ -102,12 +102,6 @@ def _effective_action_taken(action_taken: str, *, dry_run: bool) -> str:
     if dry_run:
         return f"simulate_{action_taken}"
     return f"move_{action_taken}"
-
-
-def _hash_value(value: str | None) -> str | None:
-    if value in (None, ""):
-        return None
-    return hashlib.sha256(str(value).encode("utf-8")).hexdigest()
 
 
 def _state_identity(value: str | None, *, redact: bool) -> str:

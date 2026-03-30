@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-import hashlib
 import os
 import sqlite3
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from .schemas import EmailRecord, LeaseAcquireResult, WorkerLockResult, WorkflowStatus
+from .utils import _chmod_owner_only, _hash_value
 
 MOVE_CLEANUP_PENDING_ACTION = "move_copy_succeeded_cleanup_pending"
 
@@ -527,15 +527,3 @@ class StateManager:
         return EmailRecord.model_validate(dict(row))
 
 
-def _chmod_owner_only(path: Path) -> None:
-    try:
-        mode = 0o700 if path.is_dir() else 0o600
-        os.chmod(path, mode)
-    except OSError:
-        pass
-
-
-def _hash_value(value: str | None) -> str | None:
-    if value in (None, ""):
-        return None
-    return hashlib.sha256(str(value).encode("utf-8")).hexdigest()

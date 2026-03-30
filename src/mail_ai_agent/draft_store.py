@@ -6,7 +6,7 @@ import re
 from pathlib import Path
 
 from .schemas import FinalDecision, ParsedEmail
-from .utils import _chmod_owner_only
+from .utils import _chmod_owner_only, _hash_value
 
 
 class DraftStore:
@@ -23,8 +23,6 @@ class DraftStore:
         *,
         redact_pii: bool = False,
     ) -> Path:
-        from .utils import _hash_value
-
         slug = re.sub(r"[^a-zA-Z0-9]+", "-", parsed_email.subject or "no-subject").strip("-").lower()
         target = self.draft_dir / f"{slug[:40] or 'draft'}-{fingerprint[:8]}.json"
         subject = parsed_email.subject
@@ -46,9 +44,3 @@ class DraftStore:
         return target
 
 
-def _chmod_owner_only(path: Path) -> None:
-    try:
-        mode = 0o700 if path.is_dir() else 0o600
-        os.chmod(path, mode)
-    except OSError:
-        pass

@@ -3,11 +3,10 @@ from __future__ import annotations
 import sqlite3
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-import hashlib
 import json
 from pathlib import Path
 
-from .utils import _chmod_owner_only
+from .utils import _chmod_owner_only, _hash_value
 
 
 @dataclass
@@ -76,11 +75,6 @@ def prune_drafts(draft_dir: Path, *, older_than_days: int) -> DraftPruneResult:
             kept += 1
 
     return DraftPruneResult(removed=removed, kept=kept)
-
-
-@dataclass
-class StateScrubResult:
-    updated_rows: int
 
 
 def scrub_state_pii(db_path: Path) -> StateScrubResult:
@@ -165,11 +159,3 @@ def scrub_draft_pii(draft_dir: Path) -> DraftScrubResult:
             _chmod_owner_only(item)
             updated_files += 1
     return DraftScrubResult(updated_files=updated_files)
-
-
-def _hash_value(value: str | None) -> str | None:
-    if value in (None, ""):
-        return None
-    return hashlib.sha256(str(value).encode("utf-8")).hexdigest()
-
-
