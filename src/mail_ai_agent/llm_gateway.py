@@ -9,6 +9,10 @@ import requests
 LOGGER = logging.getLogger(__name__)
 
 from .config import Settings
+
+
+def _escape_format_braces(s: str) -> str:
+    return s.replace("{", "{{").replace("}", "}}")
 from .schemas import LLMClassification, ParsedEmail
 
 PROMPT_TEMPLATE = """Jesteś systemem klasyfikacji poczty dla firmy usługowej. Analizujesz pojedynczą wiadomość e-mail i zwracasz wyłącznie poprawny JSON.
@@ -56,11 +60,11 @@ class LLMGateway:
 
     def classify(self, parsed_email: ParsedEmail) -> tuple[LLMClassification, int]:
         prompt = PROMPT_TEMPLATE.format(
-            sender=parsed_email.sender,
-            subject=parsed_email.subject,
+            sender=_escape_format_braces(parsed_email.sender),
+            subject=_escape_format_braces(parsed_email.subject),
             date=parsed_email.date.isoformat() if parsed_email.date else "",
             has_attachments=parsed_email.has_attachments,
-            body=parsed_email.normalized_body,
+            body=_escape_format_braces(parsed_email.normalized_body),
         )
         last_error: Exception | None = None
         for attempt in range(1, self.settings.max_retries + 1):
