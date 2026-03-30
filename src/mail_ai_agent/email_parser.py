@@ -185,6 +185,3 @@ def _normalize_date(value: datetime | None) -> str:
         return ""
     return value.astimezone(timezone.utc).isoformat()
 
-
-def _matches_any(value: str, patterns: tuple[str, ...]) -> bool:
-    return any(re.search(pattern, value, flags=re.IGNORECASE) for pattern in patterns)
