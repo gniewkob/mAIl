@@ -172,6 +172,43 @@ def test_scrub_state_pii_redacts_existing_rows(tmp_path: Path) -> None:
     assert redacted.subject_sha256 is not None
 
 
+def test_scrub_state_pii_preserves_sha256_hashes(tmp_path):
+    """scrub_state_pii must compute sender_sha256/subject_sha256 before wiping PII."""
+    import hashlib
+    import sqlite3
+    from mail_ai_agent.state_manager import StateManager
+    from mail_ai_agent.maintenance import scrub_state_pii
+
+    db_path = tmp_path / "state.sqlite"
+    sm = StateManager(db_path)
+    sm.acquire_lease(
+        mailbox_id="test",
+        message_id="<m@test>",
+        fingerprint="fp1",
+        imap_uid="1",
+        sender="alice@example.com",
+        subject="Hello World",
+        source_folder="INBOX",
+        internaldate=None,
+        worker_id="w",
+        lease_seconds=60,
+        max_retries=3,
+    )
+
+    scrub_state_pii(db_path)
+
+    with sqlite3.connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        row = conn.execute("SELECT * FROM email_processing_state WHERE fingerprint = 'fp1'").fetchone()
+
+    assert row["sender"] == "[redacted]"
+    assert row["subject"] == "[redacted]"
+    expected_sender_hash = hashlib.sha256("alice@example.com".encode()).hexdigest()
+    expected_subject_hash = hashlib.sha256("Hello World".encode()).hexdigest()
+    assert row["sender_sha256"] == expected_sender_hash, f"sender_sha256 wrong: {row['sender_sha256']}"
+    assert row["subject_sha256"] == expected_subject_hash, f"subject_sha256 wrong: {row['subject_sha256']}"
+
+
 def test_scrub_draft_pii_redacts_sender_and_subject(tmp_path: Path) -> None:
     draft = tmp_path / "draft.json"
     draft.write_text(
