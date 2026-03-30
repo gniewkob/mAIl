@@ -335,6 +335,41 @@ def test_scrub_state_pii_is_idempotent(tmp_path: Path) -> None:
     assert row2[0] == first_hash, "Hash must not change on second run"
 
 
+def test_scrub_state_pii_writes_hash_and_redacts_atomically(tmp_path: Path) -> None:
+    """scrub_state_pii must write sha256 hash and redact PII in the same transaction."""
+    import sqlite3
+    from mail_ai_agent.state_manager import StateManager
+    from mail_ai_agent.maintenance import scrub_state_pii
+
+    db = tmp_path / "state.sqlite"
+    manager = StateManager(db)
+    manager.acquire_lease(
+        mailbox_id="mb",
+        message_id="msg-1",
+        fingerprint="fp-1",
+        imap_uid="1",
+        sender="alice@example.com",
+        subject="Important subject",
+        source_folder="INBOX",
+        internaldate=None,
+        worker_id="w",
+        lease_seconds=60,
+        max_retries=3,
+    )
+
+    result = scrub_state_pii(db)
+    assert result.updated_rows >= 1
+
+    conn = sqlite3.connect(db)
+    row = conn.execute(
+        "SELECT sender, sender_sha256 FROM email_processing_state LIMIT 1"
+    ).fetchone()
+    conn.close()
+    assert row[0] == "[redacted]"
+    assert row[1] is not None
+    assert len(row[1]) == 64  # sha256 hex digest length
+
+
 def test_scrub_draft_pii_redacts_sender_and_subject(tmp_path: Path) -> None:
     draft = tmp_path / "draft.json"
     draft.write_text(

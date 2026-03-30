@@ -83,6 +83,7 @@ def scrub_state_pii(db_path: Path) -> StateScrubResult:
         return StateScrubResult(updated_rows=0)
 
     with sqlite3.connect(db_path) as conn:
+        conn.execute("BEGIN EXCLUSIVE")
         conn.row_factory = sqlite3.Row
         # First pass: compute and persist sha256 hashes for rows that have PII but NULL hashes
         rows_needing_hash = conn.execute(
