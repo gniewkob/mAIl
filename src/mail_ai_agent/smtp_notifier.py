@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ssl
 import smtplib
 from email.message import EmailMessage
 
@@ -25,6 +26,6 @@ def send_admin_email(settings: Settings, *, subject: str, body: str) -> None:
 
     with smtplib.SMTP(settings.smtp_host, settings.smtp_port, timeout=30) as smtp:
         smtp.ehlo()
-        smtp.starttls()
+        smtp.starttls(context=ssl.create_default_context())
         smtp.login(settings.smtp_user, settings.smtp_pass.get_secret_value())
         smtp.send_message(msg)
