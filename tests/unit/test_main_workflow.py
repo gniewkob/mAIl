@@ -46,7 +46,7 @@ class FakeIMAPClient:
         message.set_content("Jaka jest cena usługi manicure?")
         return [CandidateMessage(uid="42", uidvalidity="999", internaldate=None, raw_bytes=message.as_bytes())]
 
-    def copy_message(self, source_folder: str, uid: str, target_folder: str) -> None:
+    def copy_message(self, source_folder: str, uid: str, target_folder: str) -> str | None:
         self.copied.append((source_folder, uid, target_folder))
         return "142"
 
@@ -82,7 +82,7 @@ class FakeMultiMailboxIMAPClient:
         message.set_content("Jaka jest cena usługi manicure?")
         return [CandidateMessage(uid=self.mailbox.mailbox_id, uidvalidity="999", internaldate=None, raw_bytes=message.as_bytes())]
 
-    def copy_message(self, source_folder: str, uid: str, target_folder: str) -> None:
+    def copy_message(self, source_folder: str, uid: str, target_folder: str) -> str | None:
         self.copied.append((source_folder, uid, target_folder))
 
     def set_flagged(self, folder: str, uid: str) -> None:

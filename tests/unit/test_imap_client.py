@@ -335,3 +335,41 @@ def test_copy_message_returns_target_uid_from_copyuid(monkeypatch) -> None:
         target_uid = client.copy_message("INBOX.AI-Review", "42", "INBOX.Questions")
 
     assert target_uid == "142"
+
+
+def test_fetch_candidates_limit_zero_includes_all_uids():
+    """When imap_fetch_limit=0, all UIDs from SEARCH are included (no limit applied)."""
+    from unittest.mock import MagicMock
+    from pydantic import SecretStr
+    from mail_ai_agent.config import MailboxConfig
+    from mail_ai_agent.imap_client import IMAPClient
+
+    mailbox = MailboxConfig(
+        mailbox_id="test",
+        imap_host="h",
+        imap_user="u@h",
+        imap_pass=SecretStr("p"),
+        imap_fetch_limit=0,  # unlimited
+    )
+    client = IMAPClient(mailbox)
+    mock_conn = MagicMock()
+    client.connection = mock_conn
+    mock_conn.select.return_value = ("OK", [b"1"])
+    mock_conn.response.return_value = ("OK", [b"12345"])
+
+    def fake_run_with_retry(op_name, func):
+        return func()
+    client._run_with_retry = fake_run_with_retry
+
+    # SEARCH returns 5 UIDs
+    mock_conn.uid.side_effect = [
+        ("OK", [b"1 2 3 4 5"]),  # SEARCH
+        ("OK", []),               # FETCH (empty response ok for this test)
+    ]
+    client.fetch_candidates("INBOX")
+
+    # Check the FETCH call included all 5 UIDs
+    fetch_call_args = mock_conn.uid.call_args_list[1][0]
+    uid_set_arg = fetch_call_args[1]
+    for uid in ["1", "2", "3", "4", "5"]:
+        assert uid in uid_set_arg, f"UID {uid} missing from FETCH with limit=0"
