@@ -234,37 +234,45 @@ class StateManager:
                     reason="lease acquired",
                 )
 
-            cursor = conn.execute(
-                """
-                INSERT INTO email_processing_state (
-                    mailbox_id, message_id, fingerprint, content_fingerprint, imap_uid, uidvalidity, source_folder,
-                    sender, sender_sha256, subject, subject_sha256, internaldate,
-                    status, processing_started_at, lock_expires_at, lock_owner, attempt_count,
-                    created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    mailbox_id,
-                    message_id,
-                    fingerprint,
-                    content_fingerprint,
-                    imap_uid,
-                    uidvalidity,
-                    source_folder,
-                    sender,
-                    sender_sha256 or _hash_value(sender),
-                    subject,
-                    subject_sha256 or _hash_value(subject),
-                    internaldate,
-                    WorkflowStatus.PROCESSING.value,
-                    now.isoformat(),
-                    expires_at.isoformat(),
-                    worker_id,
-                    1,
-                    now.isoformat(),
-                    now.isoformat(),
-                ),
-            )
+            try:
+                cursor = conn.execute(
+                    """
+                    INSERT INTO email_processing_state (
+                        mailbox_id, message_id, fingerprint, content_fingerprint, imap_uid, uidvalidity, source_folder,
+                        sender, sender_sha256, subject, subject_sha256, internaldate,
+                        status, processing_started_at, lock_expires_at, lock_owner, attempt_count,
+                        created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        mailbox_id,
+                        message_id,
+                        fingerprint,
+                        content_fingerprint,
+                        imap_uid,
+                        uidvalidity,
+                        source_folder,
+                        sender,
+                        sender_sha256 or _hash_value(sender),
+                        subject,
+                        subject_sha256 or _hash_value(subject),
+                        internaldate,
+                        WorkflowStatus.PROCESSING.value,
+                        now.isoformat(),
+                        expires_at.isoformat(),
+                        worker_id,
+                        1,
+                        now.isoformat(),
+                        now.isoformat(),
+                    ),
+                )
+            except sqlite3.IntegrityError:
+                # Another thread/process inserted the same row concurrently; treat as locked.
+                conflict_row = self._lookup_identity_rows(conn, mailbox_id, message_id, fingerprint, content_fingerprint)
+                row = next((r for r in conflict_row if r is not None), None)
+                if row is not None:
+                    return LeaseAcquireResult(outcome="locked", record=self._row_to_record(row), reason="concurrent insert collision")
+                raise
             inserted_row = conn.execute(
                 "SELECT * FROM email_processing_state WHERE id = ?",
                 (cursor.lastrowid,),

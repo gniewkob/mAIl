@@ -610,3 +610,28 @@ def test_process_mailboxes_isolates_mailbox_preflight_failures(monkeypatch, tmp_
     healthy = next(item for item in report.mailbox_reports if item.mailbox_id == "healthy")
     assert broken.failed == 1
     assert healthy.simulated == 1
+
+
+def test_process_inbox_dry_run_audit_log_redacts_pii(monkeypatch, tmp_path: Path) -> None:
+    from mail_ai_agent.main import process_inbox
+
+    monkeypatch.setattr("mail_ai_agent.main.IMAPClient", FakeIMAPClient)
+    monkeypatch.setattr("mail_ai_agent.main.LLMGateway", FakeLLMGateway)
+    settings = make_settings(tmp_path)  # DRY_RUN=True, AUDIT_REDACT_PII defaults to True
+
+    process_inbox(settings)
+
+    audit_lines = (tmp_path / "audit.jsonl").read_text(encoding="utf-8").splitlines()
+    assert len(audit_lines) == 1
+    payload = json.loads(audit_lines[0])
+
+    # PII fields must be absent
+    for field in ("sender", "subject", "message_id"):
+        assert field not in payload, f"PII field '{field}' must not appear in audit log"
+
+    # sha256 hashes must be present and non-empty
+    for field in ("sender", "subject", "message_id"):
+        sha_key = f"{field}_sha256"
+        assert sha_key in payload, f"Expected '{sha_key}' in audit log"
+        assert isinstance(payload[sha_key], str) and len(payload[sha_key]) == 64, \
+            f"Expected 64-char sha256 hex for '{sha_key}', got {payload.get(sha_key)!r}"
