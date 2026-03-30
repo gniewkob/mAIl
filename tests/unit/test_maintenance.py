@@ -172,6 +172,33 @@ def test_scrub_state_pii_redacts_existing_rows(tmp_path: Path) -> None:
     assert redacted.subject_sha256 is not None
 
 
+def test_rotate_audit_log_uses_rename_not_copy(tmp_path, monkeypatch):
+    """rotate_audit_log must rename original (atomic) — not copy+truncate."""
+    import shutil
+    from mail_ai_agent.maintenance import rotate_audit_log
+
+    log_path = tmp_path / "audit.jsonl"
+    log_path.write_text("x" * 200, encoding="utf-8")
+
+    copy2_called = []
+    original_copy2 = shutil.copy2
+
+    def tracking_copy2(*args, **kwargs):
+        copy2_called.append(args)
+        return original_copy2(*args, **kwargs)
+
+    monkeypatch.setattr(shutil, "copy2", tracking_copy2)
+    result = rotate_audit_log(log_path, max_bytes=100)
+
+    assert result.rotated is True
+    assert not copy2_called, "rotate_audit_log must use rename (Path.replace), not shutil.copy2"
+    archive = log_path.with_suffix(".jsonl.1")
+    assert archive.exists()
+    assert archive.read_text() == "x" * 200
+    assert log_path.exists()
+    assert log_path.read_text() == ""
+
+
 def test_scrub_state_pii_preserves_sha256_hashes(tmp_path):
     """scrub_state_pii must compute sender_sha256/subject_sha256 before wiping PII."""
     import hashlib

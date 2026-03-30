@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import shutil
 import sqlite3
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -53,9 +52,10 @@ def rotate_audit_log(path: Path, *, max_bytes: int, backup_count: int = 5) -> Ro
             source.replace(target)
 
     archive = path.with_suffix(path.suffix + ".1")
-    shutil.copy2(path, archive)
+    path.replace(archive)          # atomic rename — crash-safe
     _chmod_owner_only(archive)
-    path.write_text("", encoding="utf-8")
+    path.touch()                   # create fresh empty log
+    _chmod_owner_only(path)
     return RotationResult(rotated=True, archive_path=archive, original_size=size)
 
 
