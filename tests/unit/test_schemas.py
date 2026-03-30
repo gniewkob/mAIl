@@ -55,3 +55,26 @@ def test_invalid_llm_classification_rejects_extra_fields() -> None:
     with pytest.raises(ValidationError):
         LLMClassification.model_validate(payload)
 
+
+def test_llm_classification_accepts_billing_and_system() -> None:
+    from mail_ai_agent.schemas import LLMClassification
+    c = LLMClassification(
+        category="billing",
+        priority="medium",
+        requires_reply=True,
+        confidence=0.8,
+        summary="billing question",
+        reasoning_short="looks like a billing inquiry",
+    )
+    assert c.category == "billing"
+
+    c2 = LLMClassification(
+        category="system",
+        priority="low",
+        requires_reply=False,
+        confidence=0.9,
+        summary="system notification",
+        reasoning_short="automated system message",
+    )
+    assert c2.category == "system"
+

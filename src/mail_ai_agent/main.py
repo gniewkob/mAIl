@@ -21,7 +21,6 @@ LOGGER = logging.getLogger(__name__)
 
 
 def process_mailboxes(settings: Settings) -> ProcessingReport:
-    logging.basicConfig(level=getattr(logging, settings.log_level))
     state = StateManager(settings.state_db_path)
     audit = AuditLogger(settings.audit_log_path, redact_pii=settings.audit_redact_pii)
     drafts = DraftStore(settings.draft_dir)

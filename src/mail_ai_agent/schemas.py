@@ -50,7 +50,7 @@ class LLMEntities(BaseModel):
 class LLMClassification(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
-    category: Literal["appointment", "question", "complaint", "spam_or_offer", "other"]
+    category: Literal["appointment", "question", "complaint", "spam_or_offer", "billing", "system", "other"]
     priority: Literal["high", "medium", "low"]
     requires_reply: bool
     confidence: float

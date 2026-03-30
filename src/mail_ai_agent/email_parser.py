@@ -34,6 +34,14 @@ DISCLAIMER_PATTERNS = (
     r"this e-mail.*confidential",
 )
 
+_COMPILED_QUOTED = tuple(re.compile(p, re.IGNORECASE) for p in QUOTED_PATTERNS)
+_COMPILED_SIGNATURE = tuple(re.compile(p, re.IGNORECASE) for p in SIGNATURE_PATTERNS)
+_COMPILED_DISCLAIMER = tuple(re.compile(p, re.IGNORECASE) for p in DISCLAIMER_PATTERNS)
+
+
+def _matches_compiled(value: str, patterns: tuple[re.Pattern, ...]) -> bool:
+    return any(p.search(value) for p in patterns)
+
 
 def parse_email(raw_bytes: bytes, settings: Settings) -> ParsedEmail:
     message = BytesParser(policy=policy.default).parsebytes(raw_bytes)
@@ -107,11 +115,11 @@ def normalize_body(body: str, max_chars: int) -> str:
         stripped = line.strip()
         if not stripped and cleaned and cleaned[-1] == "":
             continue
-        if _matches_any(stripped, QUOTED_PATTERNS):
+        if _matches_compiled(stripped, _COMPILED_QUOTED):
             break
-        if _matches_any(stripped, SIGNATURE_PATTERNS):
+        if _matches_compiled(stripped, _COMPILED_SIGNATURE):
             break
-        if _matches_any(stripped.lower(), DISCLAIMER_PATTERNS):
+        if _matches_compiled(stripped.lower(), _COMPILED_DISCLAIMER):
             break
         cleaned.append(stripped)
 

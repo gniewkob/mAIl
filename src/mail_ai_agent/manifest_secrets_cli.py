@@ -23,6 +23,10 @@ def _load_manifest(path: Path) -> tuple[dict | list, list[dict]]:
 
 def _write_manifest(path: Path, payload: dict | list) -> None:
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    try:
+        os.chmod(path, 0o600)
+    except OSError:
+        pass
 
 
 def main() -> None:
