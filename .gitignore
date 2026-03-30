@@ -15,6 +15,7 @@ __pycache__/
 
 # Local mailbox manifests
 config/mailboxes*.json
+config/mailboxes*/
 !config/mailboxes.example.json
 
 # Runtime artifacts
