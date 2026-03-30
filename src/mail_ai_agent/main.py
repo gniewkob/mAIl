@@ -22,7 +22,7 @@ LOGGER = logging.getLogger(__name__)
 
 def process_mailboxes(settings: Settings) -> ProcessingReport:
     state = StateManager(settings.state_db_path)
-    audit = AuditLogger(settings.audit_log_path, redact_pii=settings.audit_redact_pii)
+    audit = AuditLogger(settings.audit_log_path, redact_pii=settings.audit_redact_pii, fsync=settings.audit_fsync)
     drafts = DraftStore(settings.draft_dir)
     llm = LLMGateway(settings)
     report = ProcessingReport(worker_id=settings.worker_id, dry_run=settings.dry_run)

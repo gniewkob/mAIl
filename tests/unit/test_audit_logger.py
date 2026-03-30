@@ -39,3 +39,16 @@ def test_audit_log_entry_readable_immediately(tmp_path):
     lines = (tmp_path / "audit.jsonl").read_text(encoding="utf-8").strip().splitlines()
     assert len(lines) == 1
     assert json.loads(lines[0])["value"] == "hello"
+
+
+def test_audit_logger_skips_fsync_when_disabled(tmp_path) -> None:
+    import unittest.mock as mock
+    from mail_ai_agent.audit_logger import AuditLogger
+
+    log_path = tmp_path / "audit.jsonl"
+    logger = AuditLogger(log_path, redact_pii=False, fsync=False)
+
+    with mock.patch("os.fsync") as mock_fsync:
+        logger.log(level="INFO", action_taken="test", status_before=None,
+                   status_after="processed", record_id=None, mailbox_id="mb")
+    mock_fsync.assert_not_called()
