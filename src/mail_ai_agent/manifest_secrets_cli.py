@@ -12,16 +12,17 @@ def _normalize_secret_name(value: str) -> str:
     return "".join(char if char.isalnum() else "_" for char in value.upper()).strip("_") or "DEFAULT"
 
 
-def _load_manifest(path: Path) -> tuple[dict | list, list[dict]]:
-    payload = json.loads(path.read_text(encoding="utf-8"))
+def _load_manifest(path: Path) -> tuple[dict[str, object] | list[dict[str, object]], list[dict[str, object]]]:
+    payload: dict[str, object] | list[dict[str, object]] = json.loads(path.read_text(encoding="utf-8"))
     if isinstance(payload, dict):
-        return payload, payload.get("mailboxes", [])
+        mailboxes: list[dict[str, object]] = payload.get("mailboxes", [])  # type: ignore[assignment]
+        return payload, mailboxes
     if isinstance(payload, list):
         return payload, payload
     raise ValueError("Mailbox manifest must be a list or an object with a 'mailboxes' key.")
 
 
-def _write_manifest(path: Path, payload: dict | list) -> None:
+def _write_manifest(path: Path, payload: dict[str, object] | list[dict[str, object]]) -> None:
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     try:
         os.chmod(path, 0o600)
@@ -36,6 +37,12 @@ def main() -> None:
     parser.add_argument("--mode", choices=["env", "keychain"], default="env", help="Secret reference mode to generate")
     parser.add_argument("--sidecar-output", default=None, help="Optional file for env exports or keychain import commands")
     parser.add_argument("--service", default="mail-ai", help="Keychain service name when --mode=keychain")
+    parser.add_argument(
+        "--allow-stdout-secrets",
+        action="store_true",
+        default=False,
+        help="Allow printing secrets to stdout (use --sidecar-output instead)",
+    )
     args = parser.parse_args()
 
     payload, mailboxes = _load_manifest(Path(args.input))
@@ -76,8 +83,13 @@ def main() -> None:
         except OSError:
             pass
     elif sidecar_lines:
+        if not args.allow_stdout_secrets:
+            raise SystemExit(
+                "[ERROR] Secrets would be printed to stdout. "
+                "Use --sidecar-output <file> (recommended) or pass --allow-stdout-secrets to opt in."
+            )
         print(
-            "[WARN] Printing secrets to stdout. Use --sidecar-output <file> to write to a chmod 600 file instead.",
+            "[WARN] Printing secrets to stdout. Use --sidecar-output <file> instead.",
             file=sys.stderr,
         )
         print("\n".join(sidecar_lines))

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 
 from .config import Settings
 from .imap_client import IMAPClient
@@ -16,7 +17,7 @@ def main() -> None:
     parser.add_argument("--limit", type=int, default=None, help="Optional limit of candidates to process")
     args = parser.parse_args()
 
-    settings = Settings(_env_file=args.env_file) if args.env_file else Settings()
+    settings = Settings(_env_file=args.env_file) if args.env_file else Settings()  # type: ignore[call-arg]
     state = StateManager(settings.state_db_path)
     mailboxes = settings.load_mailboxes()
     if args.mailbox_id:
@@ -58,7 +59,6 @@ def main() -> None:
                 imap.delete_message(mailbox.imap_source_folder, record.imap_uid)
                 cleaned_record_ids.append(record.id)
             except Exception as exc:
-                import sys
                 failed_uids.append(record.imap_uid)
                 print(f"[WARN] Failed to clean UID {record.imap_uid}: {exc}", file=sys.stderr)
         for record_id in cleaned_record_ids:

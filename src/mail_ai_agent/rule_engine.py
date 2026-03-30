@@ -51,7 +51,7 @@ MARKETING_REGEX = re.compile(
 
 
 @functools.lru_cache(maxsize=64)
-def _billing_email_pattern(billing_email: str | None) -> "re.Pattern | None":
+def _billing_email_pattern(billing_email: str | None) -> "re.Pattern[str] | None":
     if not billing_email:
         return None
     return re.compile(re.escape(billing_email), flags=re.IGNORECASE)

@@ -40,7 +40,7 @@ class IMAPClient(AbstractContextManager["IMAPClient"]):
         self._connect_and_login()
         return self
 
-    def __exit__(self, exc_type, exc, tb) -> None:
+    def __exit__(self, exc_type: object, exc: object, tb: object) -> None:
         if self.connection is not None:
             try:
                 self.connection.logout()
@@ -158,7 +158,7 @@ class IMAPClient(AbstractContextManager["IMAPClient"]):
             uidvalidity = self._get_uidvalidity()
             # The criterion is validated in config.py against a safe token whitelist.
             search_tokens = self.mailbox.imap_search_criterion.split()
-            status, data = self.connection.uid("search", None, *search_tokens)
+            status, data = self.connection.uid("search", None, *search_tokens)  # type: ignore[arg-type]
             if status != "OK":
                 raise RuntimeError("Unable to search folder")
             all_uids = [uid for uid in data[0].split() if uid.isdigit()]
@@ -286,7 +286,7 @@ class IMAPClient(AbstractContextManager["IMAPClient"]):
 
     def _search_deleted_uids(self) -> list[str]:
         assert self.connection is not None
-        status, data = self.connection.uid("search", None, "DELETED")
+        status, data = self.connection.uid("search", None, "DELETED")  # type: ignore[arg-type]
         if status != "OK" or not data:
             raise RuntimeError("Unable to search deleted messages")
         deleted = data[0]
@@ -302,7 +302,7 @@ class IMAPClient(AbstractContextManager["IMAPClient"]):
 
 
 def _parse_batch_fetch_response(
-    fetched: list,
+    fetched: list[object],
     uidvalidity: str | None,
 ) -> Generator["CandidateMessage", None, None]:
     for item in fetched:

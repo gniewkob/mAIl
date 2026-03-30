@@ -4,7 +4,7 @@ import json
 from email.message import EmailMessage
 from pathlib import Path
 
-from mail_ai_agent.config import Settings
+from mail_ai_agent.config import MailboxConfig, Settings
 from mail_ai_agent.schemas import CandidateMessage, LLMClassification, ParsedEmail
 from mail_ai_agent.state_manager import MOVE_CLEANUP_PENDING_ACTION, StateManager
 
@@ -23,8 +23,8 @@ def make_settings(tmp_path: Path) -> Settings:
 
 
 class FakeIMAPClient:
-    def __init__(self, settings: Settings) -> None:
-        self.settings = settings
+    def __init__(self, mailbox: MailboxConfig) -> None:
+        self.mailbox = mailbox
         # Reset and store per-instance lists on the class so assertions remain readable.
         type(self).copied = []
         type(self).flagged = []
@@ -91,6 +91,9 @@ class FakeMultiMailboxIMAPClient:
     def delete_message(self, folder: str, uid: str) -> None:
         return None
 
+    def get_uidvalidity(self, folder: str) -> str | None:
+        return "99999"
+
     def validate_routing_setup(self, *, source_folder: str, target_folders: list[str], dry_run: bool) -> None:
         return None
 
@@ -114,8 +117,8 @@ class FakePreflightFailingIMAPClient(FakeIMAPClient):
 class FakeExpungeFailingCleanupPassIMAPClient(FakeIMAPClient):
     expunge_calls: int = 0
 
-    def __init__(self, settings: Settings) -> None:
-        super().__init__(settings)
+    def __init__(self, mailbox: MailboxConfig) -> None:
+        super().__init__(mailbox)
         type(self).expunge_calls = 0
 
     def expunge(self, folder: str) -> None:

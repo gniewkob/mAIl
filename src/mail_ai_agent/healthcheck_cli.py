@@ -6,10 +6,12 @@ import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+from typing import cast
+
 from .reporting import load_audit_records, summarize_state, tail_audit_records
 
 
-def _recent_records(path: Path, limit: int, *, max_age_minutes: int | None) -> list[dict]:
+def _recent_records(path: Path, limit: int, *, max_age_minutes: int | None) -> list[dict[str, object]]:
     if max_age_minutes is None and limit > 0:
         # Fast path: tail-read only the last N records without loading the full file
         return tail_audit_records(path, limit)
@@ -22,7 +24,7 @@ def _recent_records(path: Path, limit: int, *, max_age_minutes: int | None) -> l
     return records[-limit:]
 
 
-def _record_timestamp(record: dict) -> datetime | None:
+def _record_timestamp(record: dict[str, object]) -> datetime | None:
     raw = record.get("timestamp")
     if not raw:
         return None
@@ -47,10 +49,10 @@ def build_health_payload(
     recent = _recent_records(audit_log, recent_audit_limit, max_age_minutes=recent_audit_max_age_minutes)
     issues: list[str] = []
 
-    statuses = state.get("statuses", {})
-    failed = int(statuses.get("failed", 0))
-    cleanup_pending = int(state.get("cleanup_pending", 0))
-    uncertain = int(statuses.get("uncertain", 0))
+    statuses = cast(dict[str, object], state.get("statuses", {}))
+    failed = int(cast(int, statuses.get("failed", 0)))
+    cleanup_pending = int(cast(int, state.get("cleanup_pending", 0)))
+    uncertain = int(cast(int, statuses.get("uncertain", 0)))
 
     if failed > 0:
         issues.append(f"state_failed={failed}")
@@ -72,7 +74,7 @@ def build_health_payload(
         slow_records = [
             r for r in recent
             if isinstance(r.get("model_latency_ms"), (int, float))
-            and r["model_latency_ms"] > max_llm_latency_ms
+            and cast(float, r["model_latency_ms"]) > max_llm_latency_ms
         ]
         if slow_records:
             issues.append(f"llm_latency_exceeded={len(slow_records)} records above {max_llm_latency_ms}ms")
@@ -84,8 +86,8 @@ def build_health_payload(
         "ok": not issues,
         "issues": issues,
         "state": {
-            "records": int(state.get("records", 0)),
-            "processed": int(statuses.get("processed", 0)),
+            "records": int(cast(int, state.get("records", 0))),
+            "processed": int(cast(int, statuses.get("processed", 0))),
             "uncertain": uncertain,
             "failed": failed,
             "cleanup_pending": cleanup_pending,

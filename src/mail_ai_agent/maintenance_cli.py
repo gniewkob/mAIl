@@ -35,19 +35,19 @@ def main() -> None:
         }
 
     if args.prune_drafts_older_than_days is not None:
-        result = prune_drafts(
+        prune_result = prune_drafts(
             Path(args.draft_dir),
             older_than_days=args.prune_drafts_older_than_days,
         )
-        payload["draft_prune"] = {"removed": result.removed, "kept": result.kept}
+        payload["draft_prune"] = {"removed": prune_result.removed, "kept": prune_result.kept}
 
     if args.scrub_state_pii:
-        result = scrub_state_pii(Path(args.state_db))
-        payload["state_scrub"] = {"updated_rows": result.updated_rows}
+        state_scrub_result = scrub_state_pii(Path(args.state_db))
+        payload["state_scrub"] = {"updated_rows": state_scrub_result.updated_rows}
 
     if args.scrub_draft_pii:
-        result = scrub_draft_pii(Path(args.draft_dir))
-        payload["draft_scrub"] = {"updated_files": result.updated_files}
+        draft_scrub_result = scrub_draft_pii(Path(args.draft_dir))
+        payload["draft_scrub"] = {"updated_files": draft_scrub_result.updated_files}
 
     if args.vacuum_db:
         payload["sqlite"] = maintain_sqlite(Path(args.state_db))

@@ -5,6 +5,7 @@ import html
 import re
 from datetime import datetime, timezone
 from email import policy
+from email.message import Message, MIMEPart
 from email.parser import BytesParser
 from email.utils import parsedate_to_datetime
 
@@ -39,7 +40,7 @@ _COMPILED_SIGNATURE = tuple(re.compile(p, re.IGNORECASE) for p in SIGNATURE_PATT
 _COMPILED_DISCLAIMER = tuple(re.compile(p, re.IGNORECASE) for p in DISCLAIMER_PATTERNS)
 
 
-def _matches_compiled(value: str, patterns: tuple[re.Pattern, ...]) -> bool:
+def _matches_compiled(value: str, patterns: tuple[re.Pattern[str], ...]) -> bool:
     return any(p.search(value) for p in patterns)
 
 
@@ -152,13 +153,13 @@ def compute_content_fingerprint(parsed_email: ParsedEmail) -> str:
     return hashlib.sha256(source.encode("utf-8")).hexdigest()
 
 
-def _safe_part_content(part) -> str:
+def _safe_part_content(part: MIMEPart) -> str:
     try:
         content = part.get_content()
     except (LookupError, UnicodeDecodeError):
-        payload = part.get_payload(decode=True) or b""
+        raw_payload = part.get_payload(decode=True) or b""
         charset = part.get_content_charset() or "utf-8"
-        content = payload.decode(charset, errors="replace")
+        content = raw_payload.decode(charset, errors="replace") if isinstance(raw_payload, bytes) else str(raw_payload)
     if isinstance(content, bytes):
         return content.decode(part.get_content_charset() or "utf-8", errors="replace")
     return str(content)
@@ -185,6 +186,3 @@ def _normalize_date(value: datetime | None) -> str:
         return ""
     return value.astimezone(timezone.utc).isoformat()
 
-
-def _matches_any(value: str, patterns: tuple[str, ...]) -> bool:
-    return any(re.search(pattern, value, flags=re.IGNORECASE) for pattern in patterns)

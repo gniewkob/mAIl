@@ -29,7 +29,7 @@ def test_manifest_secrets_cli_generates_env_refs(monkeypatch, tmp_path: Path, ca
     monkeypatch.setattr(
         sys,
         "argv",
-        ["manifest_secrets_cli", "--input", str(source), "--output", str(migrated), "--mode", "env"],
+        ["manifest_secrets_cli", "--input", str(source), "--output", str(migrated), "--mode", "env", "--allow-stdout-secrets"],
     )
 
     main()
@@ -90,7 +90,7 @@ def test_manifest_secrets_cli_env_mode(tmp_path: Path) -> None:
         json.dumps({"mailboxes": [{"imap_user": "u@e.com", "imap_pass": "s", "imap_host": "h"}]}),
         encoding="utf-8",
     )
-    with patch.object(sys, "argv", ["x", "--input", str(input_m), "--output", str(output_m), "--mode", "env"]):
+    with patch.object(sys, "argv", ["x", "--input", str(input_m), "--output", str(output_m), "--mode", "env", "--allow-stdout-secrets"]):
         main()
 
     result = json.loads(output_m.read_text(encoding="utf-8"))
@@ -123,3 +123,45 @@ def test_sidecar_file_has_restricted_permissions(tmp_path: Path) -> None:
     ):
         main()
     assert stat.S_IMODE(os.stat(sidecar).st_mode) == 0o600
+
+
+def test_manifest_secrets_cli_exits_without_sidecar_or_allow_flag(tmp_path) -> None:
+    import sys
+    import json
+    import pytest
+    from unittest.mock import patch
+    from mail_ai_agent.manifest_secrets_cli import main
+
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(
+        json.dumps({"mailboxes": [{"mailbox_id": "test", "imap_user": "u@x.com", "imap_pass": "secret123"}]}),
+        encoding="utf-8",
+    )
+    out = tmp_path / "out.json"
+
+    with patch.object(sys, "argv", ["manifest_secrets_cli", "--input", str(manifest), "--output", str(out)]):
+        with pytest.raises(SystemExit) as exc_info:
+            main()
+    assert exc_info.value.code != 0
+
+
+def test_manifest_secrets_cli_allows_stdout_with_explicit_flag(tmp_path, capsys) -> None:
+    import sys
+    import json
+    from unittest.mock import patch
+    from mail_ai_agent.manifest_secrets_cli import main
+
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(
+        json.dumps({"mailboxes": [{"mailbox_id": "test", "imap_user": "u@x.com", "imap_pass": "secret123"}]}),
+        encoding="utf-8",
+    )
+    out = tmp_path / "out.json"
+
+    with patch.object(sys, "argv", [
+        "manifest_secrets_cli", "--input", str(manifest), "--output", str(out), "--allow-stdout-secrets"
+    ]):
+        main()
+
+    captured = capsys.readouterr()
+    assert "MAILBOX_SECRET_TEST" in captured.out

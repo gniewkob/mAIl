@@ -22,7 +22,7 @@ def main() -> None:
     args = parser.parse_args()
 
     if args.env_file:
-        settings = Settings(_env_file=args.env_file)
+        settings = Settings(_env_file=args.env_file)  # type: ignore[call-arg]
     else:
         settings = Settings()
     report = process_inbox(settings)

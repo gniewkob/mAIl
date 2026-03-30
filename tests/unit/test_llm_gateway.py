@@ -120,6 +120,33 @@ def test_extract_json_raises_on_no_json() -> None:
         _extract_json("no braces here")
 
 
+def test_classify_does_not_crash_on_curly_braces_in_body(monkeypatch) -> None:
+    import unittest.mock as mock
+    from mail_ai_agent.llm_gateway import LLMGateway
+    from mail_ai_agent.config import Settings
+    from mail_ai_agent.schemas import ParsedEmail
+
+    settings = Settings(
+        IMAP_HOST="localhost",
+        IMAP_USER="u",
+        IMAP_PASS="p",
+        MAX_RETRIES=1,
+    )
+    gateway = LLMGateway(settings)
+    parsed = ParsedEmail(
+        sender="client@example.com",
+        subject="Order {order_id} update",
+        normalized_body="Hello, your {item} is ready. Ref: {code}.",
+    )
+    good_response = '{"category": "question", "priority": "medium", "requires_reply": true, "confidence": 0.9, "summary": "order query", "entities": {}, "draft_reply": null, "reasoning_short": "customer asking about order"}'
+
+    with mock.patch("requests.post") as mock_post:
+        mock_post.return_value.json.return_value = {"response": good_response}
+        mock_post.return_value.raise_for_status.return_value = None
+        classification, _ = gateway.classify(parsed)
+    assert classification.category == "question"
+
+
 def test_classify_logs_raw_output_at_debug_on_parse_failure(monkeypatch, caplog) -> None:
     import logging
     import unittest.mock as mock

@@ -4,14 +4,15 @@ import argparse
 import json
 import sys
 from pathlib import Path
+from typing import cast
 from urllib import request
 
 from .healthcheck_cli import build_health_payload
 
 
 def build_alert_message(payload: dict[str, object], *, service_name: str) -> str:
-    state = payload.get("state", {})
-    issues = payload.get("issues", [])
+    state = cast(dict[str, object], payload.get("state", {}))
+    issues = cast(list[object], payload.get("issues", []))
     headline = "OK" if payload.get("ok") else "ALERT"
     lines = [
         f"[{headline}] {service_name}",

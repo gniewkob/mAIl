@@ -50,10 +50,10 @@ def main() -> None:
                         help="Print email to stdout instead of sending")
     args = parser.parse_args()
 
-    settings = Settings(_env_file=args.env_file) if args.env_file else Settings()
+    settings = Settings(_env_file=args.env_file) if args.env_file else Settings()  # type: ignore[call-arg]
     mailboxes = settings.load_mailboxes()
 
-    results: list[dict] = []
+    results: list[dict[str, object]] = []
     for mailbox in mailboxes:
         with IMAPClient(mailbox) as imap:
             uidplus = imap.supports_uidplus()
