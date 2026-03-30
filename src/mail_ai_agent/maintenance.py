@@ -6,6 +6,8 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+from .utils import _chmod_owner_only
+
 
 @dataclass
 class RotationResult:
@@ -40,6 +42,7 @@ def rotate_audit_log(path: Path, *, max_bytes: int, backup_count: int = 5) -> Ro
 
     archive = path.with_suffix(path.suffix + ".1")
     shutil.copy2(path, archive)
+    _chmod_owner_only(archive)
     path.write_text("", encoding="utf-8")
     return RotationResult(rotated=True, archive_path=archive, original_size=size)
 

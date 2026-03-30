@@ -37,6 +37,19 @@ def test_prune_drafts_removes_old_files(tmp_path: Path) -> None:
     assert new_file.exists()
 
 
+def test_rotated_archive_has_restricted_permissions(tmp_path):
+    import os
+    import stat
+
+    from mail_ai_agent.maintenance import rotate_audit_log
+
+    log = tmp_path / "audit.jsonl"
+    log.write_text("x" * 200, encoding="utf-8")
+    result = rotate_audit_log(log, max_bytes=100)
+    assert result.rotated is True
+    assert stat.S_IMODE(os.stat(result.archive_path).st_mode) == 0o600
+
+
 def test_maintain_sqlite_runs_integrity_check(tmp_path: Path) -> None:
     db_path = tmp_path / "state.sqlite"
     manager = StateManager(db_path)
