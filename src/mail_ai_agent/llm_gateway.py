@@ -28,7 +28,7 @@ Zasady:
 8. Jeśli nie jesteś pewien, ustaw draft_reply na null.
 9. Podsumowanie ma być krótkie, konkretne i po polsku.
 10. reasoning_short ma mieć jedno zdanie.
-11. Zacznij odpowiedź bezpośrednio od znaku `{` — bez wstępu, bez cytowania treści wiadomości.
+11. Zacznij odpowiedź bezpośrednio od otwierającego nawiasu klamrowego JSON — bez wstępu, bez cytowania treści wiadomości.
 
 Dozwolone wartości:
 - category: appointment, question, complaint, spam_or_offer, billing, system, other
