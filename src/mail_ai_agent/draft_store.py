@@ -39,8 +39,10 @@ class DraftStore:
                 payload["subject_sha256"] = _hash_value(subject)
             if sender:
                 payload["sender_sha256"] = _hash_value(sender)
-        target.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-        _chmod_owner_only(target)
+        tmp = target.with_suffix(".tmp")
+        tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        _chmod_owner_only(tmp)
+        os.replace(tmp, target)
         return target
 
 
