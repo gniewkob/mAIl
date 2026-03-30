@@ -84,3 +84,9 @@ def test_llm_gateway_raises_after_retry_exhausted(monkeypatch) -> None:
         assert "LLM classification failed after retries" in str(exc)
     else:
         raise AssertionError("Expected RuntimeError")
+
+
+def test_prompt_template_contains_email_content_delimiters() -> None:
+    from mail_ai_agent.llm_gateway import PROMPT_TEMPLATE
+    assert "<email_content>" in PROMPT_TEMPLATE
+    assert "</email_content>" in PROMPT_TEMPLATE

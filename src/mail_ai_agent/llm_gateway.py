@@ -36,13 +36,14 @@ Wymagane pola JSON:
 - draft_reply
 - reasoning_short
 
-Treść wiadomości:
+<email_content>
 Nadawca: {sender}
 Temat: {subject}
 Data: {date}
 Czy są załączniki: {has_attachments}
 Treść:
 {body}
+</email_content>
 """
 
 
