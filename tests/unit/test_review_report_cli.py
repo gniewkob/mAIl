@@ -1,0 +1,44 @@
+from __future__ import annotations
+
+import json
+import sys
+from pathlib import Path
+from unittest.mock import patch
+
+
+def test_review_report_cli_outputs_json_for_empty_log(tmp_path: Path, capsys) -> None:
+    audit = tmp_path / "audit.jsonl"
+    audit.write_text("", encoding="utf-8")
+
+    with patch.object(sys, "argv", ["review_report_cli", "--audit-log", str(audit)]):
+        from mail_ai_agent.review_report_cli import main
+        main()
+
+    out = capsys.readouterr().out
+    assert out.strip()  # some output produced
+
+
+def test_review_report_cli_exports_csv(tmp_path: Path, capsys) -> None:
+    audit = tmp_path / "audit.jsonl"
+    audit.write_text(
+        json.dumps({
+            "action_taken": "simulate_route",
+            "status_after": "simulated",
+            "category": "question",
+            "confidence": 0.85,
+            "sender_sha256": "abc",
+            "subject_sha256": "def",
+        }) + "\n",
+        encoding="utf-8",
+    )
+    dest = tmp_path / "review.csv"
+
+    with patch.object(sys, "argv", [
+        "review_report_cli", "--audit-log", str(audit), "--export-csv", str(dest),
+    ]):
+        from mail_ai_agent.review_report_cli import main
+        main()
+
+    assert dest.exists()
+    content = dest.read_text(encoding="utf-8")
+    assert "category" in content or "action_taken" in content
