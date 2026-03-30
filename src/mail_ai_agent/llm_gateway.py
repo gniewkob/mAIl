@@ -59,7 +59,7 @@ class LLMGateway:
             body=parsed_email.normalized_body,
         )
         last_error: Exception | None = None
-        for _ in range(self.settings.max_retries):
+        for attempt in range(1, self.settings.max_retries + 1):
             started = time.perf_counter()
             try:
                 response = requests.post(
@@ -81,6 +81,8 @@ class LLMGateway:
                 return classification, latency_ms
             except (requests.RequestException, ValueError) as exc:
                 last_error = exc
+                if attempt < self.settings.max_retries:
+                    time.sleep(0.5 * attempt)
                 continue
         raise RuntimeError(f"LLM classification failed after retries: {last_error}") from last_error
 

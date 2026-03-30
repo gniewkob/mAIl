@@ -34,6 +34,13 @@ MARKETING_REGEX = re.compile(
 )
 
 
+def _billing_email_pattern(mailbox: "MailboxConfig") -> "re.Pattern | None":
+    email = getattr(mailbox, "billing_payment_email", None)
+    if not email:
+        return None
+    return re.compile(re.escape(email), flags=re.IGNORECASE)
+
+
 def evaluate_rules(parsed_email: ParsedEmail, mailbox: MailboxConfig) -> RuleDecision:
     subject = parsed_email.subject.lower()
     sender = parsed_email.sender.lower()
@@ -71,6 +78,15 @@ def evaluate_rules(parsed_email: ParsedEmail, mailbox: MailboxConfig) -> RuleDec
             target_folder=category_to_folder("other", mailbox),
             action="skip_ai",
             reason="marketing or outreach pattern matched",
+        )
+
+    billing_pat = _billing_email_pattern(mailbox)
+    if billing_pat and billing_pat.search(combined):
+        return RuleDecision(
+            category="billing",
+            target_folder=category_to_folder("billing", mailbox),
+            action="skip_ai",
+            reason="billing payment email matched",
         )
 
     return RuleDecision(

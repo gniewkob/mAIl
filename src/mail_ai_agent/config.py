@@ -50,6 +50,8 @@ class MailboxConfig(BaseModel):
     imap_billing_folder: str = "INBOX.Billing"
     imap_system_folder: str = "INBOX.System"
 
+    billing_payment_email: str | None = None
+
     @field_validator("imap_search_criterion")
     @classmethod
     def validate_imap_search_criterion(cls, value: str) -> str:
@@ -77,6 +79,7 @@ class MailboxConfig(BaseModel):
             imap_other_folder=settings.imap_other_folder,
             imap_billing_folder=settings.imap_billing_folder,
             imap_system_folder=settings.imap_system_folder,
+            billing_payment_email=settings.imap_billing_payment_email,
         )
 
 
@@ -104,6 +107,7 @@ class Settings(BaseSettings):
     imap_other_folder: str = Field(default="INBOX.Other", alias="IMAP_OTHER_FOLDER")
     imap_billing_folder: str = Field(default="INBOX.Billing", alias="IMAP_BILLING_FOLDER")
     imap_system_folder: str = Field(default="INBOX.System", alias="IMAP_SYSTEM_FOLDER")
+    imap_billing_payment_email: str | None = Field(default=None, alias="IMAP_BILLING_PAYMENT_EMAIL")
 
     mailboxes_config_path: Path | None = Field(default=None, alias="MAILBOXES_CONFIG_PATH")
 
@@ -193,6 +197,7 @@ class Settings(BaseSettings):
             "imap_other_folder": _get("imap_other_folder", self.imap_other_folder),
             "imap_billing_folder": _get("imap_billing_folder", self.imap_billing_folder),
             "imap_system_folder": _get("imap_system_folder", self.imap_system_folder),
+            "billing_payment_email": _get("billing_payment_email", self.imap_billing_payment_email),
         }
         if not merged["imap_host"]:
             raise ValueError(f"Mailbox '{merged['mailbox_id']}' has no IMAP host configured.")
