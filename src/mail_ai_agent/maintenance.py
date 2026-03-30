@@ -66,6 +66,29 @@ def prune_drafts(draft_dir: Path, *, older_than_days: int) -> DraftPruneResult:
     return DraftPruneResult(removed=removed, kept=kept)
 
 
+@dataclass
+class StateScrubResult:
+    updated_rows: int
+
+
+def scrub_state_pii(db_path: Path) -> StateScrubResult:
+    if not db_path.exists():
+        return StateScrubResult(updated_rows=0)
+
+    with sqlite3.connect(db_path) as conn:
+        cursor = conn.execute(
+            """
+            UPDATE email_processing_state
+            SET sender = '[redacted]', subject = '[redacted]'
+            WHERE (sender IS NOT NULL AND sender != '' AND sender != '[redacted]')
+               OR (subject IS NOT NULL AND subject != '' AND subject != '[redacted]')
+            """
+        )
+        updated_rows = cursor.rowcount
+
+    return StateScrubResult(updated_rows=updated_rows)
+
+
 def maintain_sqlite(db_path: Path) -> dict[str, str]:
     if not db_path.exists():
         return {"status": "missing"}

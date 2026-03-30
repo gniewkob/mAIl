@@ -50,6 +50,61 @@ def test_rotated_archive_has_restricted_permissions(tmp_path):
     assert stat.S_IMODE(os.stat(result.archive_path).st_mode) == 0o600
 
 
+def test_scrub_state_pii_issues_single_update(tmp_path, monkeypatch):
+    """scrub_state_pii should issue a batch UPDATE, not N individual updates."""
+    import sqlite3
+    from mail_ai_agent.state_manager import StateManager
+    from mail_ai_agent.maintenance import scrub_state_pii
+
+    db_path = tmp_path / "state.sqlite"
+    sm = StateManager(db_path)
+    for i in range(3):
+        sm.acquire_lease(
+            mailbox_id="test",
+            message_id=f"<msg{i}@test.com>",
+            fingerprint=f"fp{i}",
+            imap_uid=str(i),
+            sender=f"sender{i}@example.com",
+            subject=f"Subject {i}",
+            source_folder="INBOX",
+            internaldate=None,
+            worker_id="w",
+            lease_seconds=60,
+            max_retries=3,
+        )
+
+    execute_calls: list = []
+    original_connect = sqlite3.connect
+
+    class TrackingConnection:
+        def __init__(self, conn: sqlite3.Connection) -> None:
+            self._conn = conn
+
+        def execute(self, sql: str, *a, **k):
+            if sql.strip().upper().startswith("UPDATE"):
+                execute_calls.append(sql)
+            return self._conn.execute(sql, *a, **k)
+
+        def __enter__(self):
+            self._conn.__enter__()
+            return self
+
+        def __exit__(self, *args):
+            return self._conn.__exit__(*args)
+
+        def __getattr__(self, name: str):
+            return getattr(self._conn, name)
+
+    def counting_connect(*args, **kwargs):
+        return TrackingConnection(original_connect(*args, **kwargs))
+
+    monkeypatch.setattr(sqlite3, "connect", counting_connect)
+    scrub_state_pii(db_path)
+
+    update_count = len([s for s in execute_calls if "email_processing_state" in s])
+    assert update_count == 1, f"Expected 1 batch UPDATE, got {update_count} UPDATE calls"
+
+
 def test_maintain_sqlite_runs_integrity_check(tmp_path: Path) -> None:
     db_path = tmp_path / "state.sqlite"
     manager = StateManager(db_path)

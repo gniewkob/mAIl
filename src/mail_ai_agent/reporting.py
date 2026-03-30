@@ -59,18 +59,22 @@ def export_state_csv(db_path: Path, destination: Path) -> int:
     destination.parent.mkdir(parents=True, exist_ok=True)
     with sqlite3.connect(db_path) as conn:
         conn.row_factory = sqlite3.Row
-        rows = conn.execute("SELECT * FROM email_processing_state ORDER BY id").fetchall()
-    if not rows:
+        cursor = conn.execute("SELECT * FROM email_processing_state ORDER BY id")
+        fieldnames: list[str] | None = None
+        row_count = 0
         with destination.open("w", encoding="utf-8", newline="") as handle:
-            handle.write("")
-        return 0
-    fieldnames = list(rows[0].keys())
-    with destination.open("w", encoding="utf-8", newline="") as handle:
-        writer = csv.DictWriter(handle, fieldnames=fieldnames)
-        writer.writeheader()
-        for row in rows:
-            writer.writerow(dict(row))
-    return len(rows)
+            writer = None
+            for row in cursor:
+                if fieldnames is None:
+                    fieldnames = list(row.keys())
+                    writer = csv.DictWriter(handle, fieldnames=fieldnames)
+                    writer.writeheader()
+                assert writer is not None
+                writer.writerow(dict(row))
+                row_count += 1
+        if row_count == 0:
+            destination.write_text("", encoding="utf-8")
+    return row_count
 
 
 def summarize_state(db_path: Path) -> dict[str, Any]:
