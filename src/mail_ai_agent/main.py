@@ -337,6 +337,7 @@ def _process_mailbox(
                             parsed_email=parsed,
                             decision=decision,
                             fingerprint=fingerprint,
+                            redact_pii=settings.state_redact_pii,
                         )
                     )
 

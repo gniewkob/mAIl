@@ -91,3 +91,19 @@ def test_unsupported_imap_search_criterion_is_rejected() -> None:
             IMAP_PASS="secret",
             IMAP_SEARCH_CRITERION='TEXT "hello world"',
         )
+
+
+def test_audit_less_restrictive_than_state_raises():
+    import pytest
+    from pydantic import ValidationError
+
+    with pytest.raises((ValueError, ValidationError)):
+        from mail_ai_agent.config import Settings
+
+        Settings(
+            IMAP_HOST="h",
+            IMAP_USER="u",
+            IMAP_PASS="p",
+            AUDIT_REDACT_PII=False,
+            STATE_REDACT_PII=True,
+        )

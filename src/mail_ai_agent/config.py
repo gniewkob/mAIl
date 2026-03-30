@@ -5,7 +5,7 @@ import re
 from pathlib import Path
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 from pydantic import SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -126,11 +126,21 @@ class Settings(BaseSettings):
     audit_log_path: Path = Field(default=Path("logs/audit.jsonl"), alias="AUDIT_LOG_PATH")
     draft_dir: Path = Field(default=Path("drafts/pending"), alias="DRAFT_DIR")
     worker_id: str = Field(default="mail-ai-worker-1", alias="WORKER_ID")
+    audit_redact_pii: bool = Field(default=False, alias="AUDIT_REDACT_PII")
+    state_redact_pii: bool = Field(default=False, alias="STATE_REDACT_PII")
 
     @field_validator("imap_search_criterion")
     @classmethod
     def validate_imap_search_criterion(cls, value: str) -> str:
         return _normalize_imap_search_criterion(value)
+
+    @model_validator(mode="after")
+    def validate_pii_flag_consistency(self) -> "Settings":
+        if self.state_redact_pii and not self.audit_redact_pii:
+            raise ValueError(
+                "AUDIT_REDACT_PII must be True when STATE_REDACT_PII is True."
+            )
+        return self
 
     def default_mailbox_id(self) -> str:
         return _default_mailbox_id(self.imap_user or "default")
