@@ -1,4 +1,5 @@
 from __future__ import annotations
+import sys
 
 import argparse
 import json
@@ -71,6 +72,10 @@ def main() -> None:
         except OSError:
             pass
     elif sidecar_lines:
+        print(
+            "[WARN] Printing secrets to stdout. Use --sidecar-output <file> to write to a chmod 600 file instead.",
+            file=sys.stderr,
+        )
         print("\n".join(sidecar_lines))
 
 

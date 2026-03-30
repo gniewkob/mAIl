@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import imaplib
 import re as _re
+import warnings
 import time
 from contextlib import AbstractContextManager
 from typing import Callable, Generator, TypeVar
@@ -134,6 +135,12 @@ class IMAPClient(AbstractContextManager["IMAPClient"]):
             if status != "OK":
                 raise RuntimeError("Unable to search folder")
             all_uids = [uid for uid in data[0].split() if uid.isdigit()]
+            if self.mailbox.imap_fetch_limit == 0 and len(all_uids) > 500:
+                warnings.warn(
+                    f"imap_fetch_limit=0 with {len(all_uids)} UIDs — consider setting a limit to avoid memory/bandwidth issues",
+                    RuntimeWarning,
+                    stacklevel=2,
+                )
             if self.mailbox.imap_fetch_limit > 0:
                 all_uids = all_uids[-self.mailbox.imap_fetch_limit:]
             if not all_uids:
