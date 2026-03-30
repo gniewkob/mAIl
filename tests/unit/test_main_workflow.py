@@ -91,6 +91,9 @@ class FakeMultiMailboxIMAPClient:
     def delete_message(self, folder: str, uid: str) -> None:
         return None
 
+    def get_uidvalidity(self, folder: str) -> str | None:
+        return "99999"
+
     def validate_routing_setup(self, *, source_folder: str, target_folders: list[str], dry_run: bool) -> None:
         return None
 

@@ -36,6 +36,12 @@ def main() -> None:
     parser.add_argument("--mode", choices=["env", "keychain"], default="env", help="Secret reference mode to generate")
     parser.add_argument("--sidecar-output", default=None, help="Optional file for env exports or keychain import commands")
     parser.add_argument("--service", default="mail-ai", help="Keychain service name when --mode=keychain")
+    parser.add_argument(
+        "--allow-stdout-secrets",
+        action="store_true",
+        default=False,
+        help="Allow printing secrets to stdout (use --sidecar-output instead)",
+    )
     args = parser.parse_args()
 
     payload, mailboxes = _load_manifest(Path(args.input))
@@ -76,8 +82,13 @@ def main() -> None:
         except OSError:
             pass
     elif sidecar_lines:
+        if not args.allow_stdout_secrets:
+            raise SystemExit(
+                "[ERROR] Secrets would be printed to stdout. "
+                "Use --sidecar-output <file> (recommended) or pass --allow-stdout-secrets to opt in."
+            )
         print(
-            "[WARN] Printing secrets to stdout. Use --sidecar-output <file> to write to a chmod 600 file instead.",
+            "[WARN] Printing secrets to stdout. Use --sidecar-output <file> instead.",
             file=sys.stderr,
         )
         print("\n".join(sidecar_lines))
