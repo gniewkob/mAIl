@@ -28,6 +28,16 @@ class FakeCleanupIMAPClient:
     def validate_routing_setup(self, *, source_folder: str, target_folders: list[str], dry_run: bool) -> None:
         self.validated.append((source_folder, tuple(target_folders), dry_run))
 
+    def get_uidvalidity(self, folder: str) -> str:
+        return "99999"
+
+
+class FakeUidvalidityMismatchIMAPClient(FakeCleanupIMAPClient):
+    """Returns a UIDVALIDITY that differs from what is stored in the record."""
+
+    def get_uidvalidity(self, folder: str) -> str:
+        return "11111"
+
 
 class FakeFailingDeleteIMAPClient(FakeCleanupIMAPClient):
     def delete_message(self, folder: str, uid: str) -> None:
@@ -44,6 +54,35 @@ def seed_cleanup_pending_record(state_db: Path) -> StateManager:
         imap_uid="42",
         sender="client@example.com",
         subject="Pytanie",
+        source_folder="INBOX.AI-Review",
+        internaldate=None,
+        worker_id="worker-1",
+        lease_seconds=60,
+        max_retries=3,
+    )
+    assert acquired.record is not None
+    manager.mark_move_cleanup_pending(
+        acquired.record.id,
+        category="question",
+        confidence=0.9,
+        target_folder="INBOX.Questions",
+        error_message="delete failed",
+        error_type="RuntimeError",
+    )
+    return manager
+
+
+def seed_cleanup_pending_record_with_uidvalidity(state_db: Path, uidvalidity: str) -> StateManager:
+    """Seed a cleanup_pending record that has a specific uidvalidity stored."""
+    manager = StateManager(state_db)
+    acquired = manager.acquire_lease(
+        mailbox_id="user_example_com",
+        message_id="msg-uidv",
+        fingerprint="fp-uidv",
+        imap_uid="77",
+        uidvalidity=uidvalidity,
+        sender="client@example.com",
+        subject="UIDVALIDITY test",
         source_folder="INBOX.AI-Review",
         internaldate=None,
         worker_id="worker-1",
@@ -192,3 +231,41 @@ def test_cleanup_continues_after_single_delete_failure(tmp_path: Path, monkeypat
     # Record 1 (UID 41) should still be cleanup_pending
     record1 = manager.get_by_message_id("user_example_com", "msg-1")
     assert record1 is not None and record1.status.value == "cleanup_pending"
+
+
+def test_cleanup_cli_apply_skips_delete_on_uidvalidity_mismatch(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """If the folder was re-created (UIDVALIDITY changed), --apply must NOT delete the message
+    and must leave the record in cleanup_pending status."""
+    state_db = tmp_path / "state.sqlite"
+    # Seed with stored uidvalidity="99999"; FakeUidvalidityMismatchIMAPClient returns "11111"
+    manager = seed_cleanup_pending_record_with_uidvalidity(state_db, uidvalidity="99999")
+
+    instances: list[FakeUidvalidityMismatchIMAPClient] = []
+
+    class CapturingMismatchClient(FakeUidvalidityMismatchIMAPClient):
+        def __init__(self, mailbox) -> None:
+            super().__init__(mailbox)
+            instances.append(self)
+
+    monkeypatch.setattr("mail_ai_agent.cleanup_cli.IMAPClient", CapturingMismatchClient)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["cleanup_cli", "--apply"],
+    )
+    monkeypatch.setenv("IMAP_HOST", "imap.example.com")
+    monkeypatch.setenv("IMAP_USER", "user@example.com")
+    monkeypatch.setenv("IMAP_PASS", "secret")
+    monkeypatch.setenv("STATE_DB_PATH", str(state_db))
+
+    main()
+
+    # delete_message must NOT have been called
+    assert instances[0].deleted == []
+
+    # Record must remain cleanup_pending — not moved to processed
+    record = manager.get_by_message_id("user_example_com", "msg-uidv")
+    assert record is not None
+    assert record.status.value == "cleanup_pending"

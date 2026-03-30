@@ -51,9 +51,17 @@ def main() -> None:
             target_folders=[],
             dry_run=False,
         )
+        current_uidvalidity = imap.get_uidvalidity(mailbox.imap_source_folder)
         cleaned_record_ids: list[int] = []
         for record in candidates:
             if not record.imap_uid:
+                continue
+            if record.uidvalidity and current_uidvalidity and record.uidvalidity != current_uidvalidity:
+                print(
+                    f"[WARN] Skipping UID {record.imap_uid}: UIDVALIDITY mismatch "
+                    f"(stored={record.uidvalidity}, current={current_uidvalidity})",
+                    file=sys.stderr,
+                )
                 continue
             try:
                 imap.delete_message(mailbox.imap_source_folder, record.imap_uid)
