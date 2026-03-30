@@ -4,7 +4,7 @@ import argparse
 import json
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Callable
+from typing import Callable, cast
 
 from .healthcheck_cli import build_health_payload
 from .quality_report import build_quality_payload
@@ -37,12 +37,12 @@ def build_metrics_payload(
         f"mailai_health_ok {1 if health['ok'] else 0}",
     ]
 
-    for key, value in health["state"].items():
+    for key, value in cast(dict[str, object], health["state"]).items():
         lines.extend(
             [
                 f"# HELP mailai_state_{key} Current {key} value from SQLite state.",
                 f"# TYPE mailai_state_{key} gauge",
-                f"mailai_state_{key} {int(value)}",
+                f"mailai_state_{key} {int(cast(int, value))}",
             ]
         )
 
@@ -102,7 +102,7 @@ def serve_metrics(
             self.end_headers()
             self.wfile.write(body)
 
-        def log_message(self, format: str, *args) -> None:  # noqa: A003
+        def log_message(self, format: str, *args: object) -> None:  # noqa: A003
             return
 
     server = ThreadingHTTPServer((host, port), Handler)
@@ -126,7 +126,7 @@ def main() -> None:
     parser.add_argument("--oneshot", action="store_true", help="Print metrics once and exit")
     args = parser.parse_args()
 
-    builder = lambda: build_metrics_payload(
+    builder: Callable[[], str] = lambda: build_metrics_payload(
         state_db=Path(args.state_db),
         audit_log=Path(args.audit_log),
         stdout_log=Path(args.stdout_log) if args.stdout_log else None,

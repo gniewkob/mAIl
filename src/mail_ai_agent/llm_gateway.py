@@ -4,7 +4,7 @@ import json
 import logging
 import time
 
-import requests
+import requests  # type: ignore[import-untyped]
 
 LOGGER = logging.getLogger(__name__)
 
@@ -126,8 +126,8 @@ def _extract_json(raw_output: str) -> str:
     raise ValueError("No complete JSON object found in model output")
 
 
-def _normalize_classification_payload(raw_output: str) -> dict:
-    payload = json.loads(_extract_json(raw_output))
+def _normalize_classification_payload(raw_output: str) -> dict[str, object]:
+    payload: dict[str, object] = json.loads(_extract_json(raw_output))
     entities = payload.get("entities")
     if entities is None or entities == []:
         payload["entities"] = {}

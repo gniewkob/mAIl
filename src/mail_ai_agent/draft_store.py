@@ -27,7 +27,7 @@ class DraftStore:
         target = self.draft_dir / f"{slug[:40] or 'draft'}-{fingerprint[:8]}.json"
         subject = parsed_email.subject
         sender = parsed_email.sender
-        payload: dict = {
+        payload: dict[str, object] = {
             "subject": "[redacted]" if (redact_pii and subject) else subject,
             "sender": "[redacted]" if (redact_pii and sender) else sender,
             "draft_reply": decision.draft_reply,

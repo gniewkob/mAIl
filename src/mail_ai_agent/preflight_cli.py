@@ -26,7 +26,7 @@ def main() -> None:
             else:
                 print(f"[OK]   {env_path} permissions: {env_stat_mode}")
 
-    settings = Settings(_env_file=args.env_file) if args.env_file else Settings()
+    settings = Settings(_env_file=args.env_file) if args.env_file else Settings()  # type: ignore[call-arg]
     mailboxes = settings.load_mailboxes()
     if args.mailbox_id:
         mailboxes = [mailbox for mailbox in mailboxes if mailbox.mailbox_id == args.mailbox_id]

@@ -9,12 +9,12 @@ from .reporting import load_audit_records
 
 def build_quality_payload(audit_path: Path) -> dict[str, Any]:
     records = load_audit_records(audit_path)
-    mailbox_counts = Counter()
-    category_counts = Counter()
-    action_counts = Counter()
-    route_source_counts = Counter()
-    status_counts = Counter()
-    target_folder_counts = Counter()
+    mailbox_counts: Counter[str] = Counter()
+    category_counts: Counter[str] = Counter()
+    action_counts: Counter[str] = Counter()
+    route_source_counts: Counter[str] = Counter()
+    status_counts: Counter[str] = Counter()
+    target_folder_counts: Counter[str] = Counter()
     recent_uncertain: list[dict[str, Any]] = []
     recent_failures: list[dict[str, Any]] = []
 

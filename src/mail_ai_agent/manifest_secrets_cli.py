@@ -12,16 +12,17 @@ def _normalize_secret_name(value: str) -> str:
     return "".join(char if char.isalnum() else "_" for char in value.upper()).strip("_") or "DEFAULT"
 
 
-def _load_manifest(path: Path) -> tuple[dict | list, list[dict]]:
-    payload = json.loads(path.read_text(encoding="utf-8"))
+def _load_manifest(path: Path) -> tuple[dict[str, object] | list[dict[str, object]], list[dict[str, object]]]:
+    payload: dict[str, object] | list[dict[str, object]] = json.loads(path.read_text(encoding="utf-8"))
     if isinstance(payload, dict):
-        return payload, payload.get("mailboxes", [])
+        mailboxes: list[dict[str, object]] = payload.get("mailboxes", [])  # type: ignore[assignment]
+        return payload, mailboxes
     if isinstance(payload, list):
         return payload, payload
     raise ValueError("Mailbox manifest must be a list or an object with a 'mailboxes' key.")
 
 
-def _write_manifest(path: Path, payload: dict | list) -> None:
+def _write_manifest(path: Path, payload: dict[str, object] | list[dict[str, object]]) -> None:
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     try:
         os.chmod(path, 0o600)

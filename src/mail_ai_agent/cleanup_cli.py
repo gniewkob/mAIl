@@ -17,7 +17,7 @@ def main() -> None:
     parser.add_argument("--limit", type=int, default=None, help="Optional limit of candidates to process")
     args = parser.parse_args()
 
-    settings = Settings(_env_file=args.env_file) if args.env_file else Settings()
+    settings = Settings(_env_file=args.env_file) if args.env_file else Settings()  # type: ignore[call-arg]
     state = StateManager(settings.state_db_path)
     mailboxes = settings.load_mailboxes()
     if args.mailbox_id:

@@ -6,6 +6,8 @@ from email.message import EmailMessage
 from pathlib import Path
 from typing import Any
 
+from pydantic import SecretStr
+
 from .config import Settings
 from .decision_engine import decide_from_llm, decide_from_rule
 from .email_parser import parse_email
@@ -17,7 +19,7 @@ def _mailbox_settings() -> Settings:
     return Settings(
         IMAP_HOST="imap.example.com",
         IMAP_USER="golden@example.com",
-        IMAP_PASS="secret",
+        IMAP_PASS=SecretStr("secret"),
         DRY_RUN=True,
     )
 
