@@ -1,14 +1,13 @@
 from __future__ import annotations
 
-import shutil
+import os
 import sqlite3
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-import hashlib
 import json
 from pathlib import Path
 
-from .utils import _chmod_owner_only
+from .utils import _chmod_owner_only, _hash_value
 
 
 @dataclass
@@ -53,9 +52,10 @@ def rotate_audit_log(path: Path, *, max_bytes: int, backup_count: int = 5) -> Ro
             source.replace(target)
 
     archive = path.with_suffix(path.suffix + ".1")
-    shutil.copy2(path, archive)
+    path.replace(archive)          # atomic rename — crash-safe
     _chmod_owner_only(archive)
-    path.write_text("", encoding="utf-8")
+    path.touch()                   # create fresh empty log
+    _chmod_owner_only(path)
     return RotationResult(rotated=True, archive_path=archive, original_size=size)
 
 
@@ -78,16 +78,36 @@ def prune_drafts(draft_dir: Path, *, older_than_days: int) -> DraftPruneResult:
     return DraftPruneResult(removed=removed, kept=kept)
 
 
-@dataclass
-class StateScrubResult:
-    updated_rows: int
-
-
 def scrub_state_pii(db_path: Path) -> StateScrubResult:
     if not db_path.exists():
         return StateScrubResult(updated_rows=0)
 
     with sqlite3.connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        # First pass: compute and persist sha256 hashes for rows that have PII but NULL hashes
+        rows_needing_hash = conn.execute(
+            """
+            SELECT id, sender, subject
+            FROM email_processing_state
+            WHERE (sender_sha256 IS NULL AND sender IS NOT NULL AND sender != '' AND sender != '[redacted]')
+               OR (subject_sha256 IS NULL AND subject IS NOT NULL AND subject != '' AND subject != '[redacted]')
+            """
+        ).fetchall()
+        for row in rows_needing_hash:
+            sender = row["sender"]
+            subject = row["subject"]
+            sender_hash = _hash_value(sender) if sender not in (None, "", "[redacted]") else None
+            subject_hash = _hash_value(subject) if subject not in (None, "", "[redacted]") else None
+            conn.execute(
+                """
+                UPDATE email_processing_state
+                SET sender_sha256 = COALESCE(sender_sha256, ?),
+                    subject_sha256 = COALESCE(subject_sha256, ?)
+                WHERE id = ?
+                """,
+                (sender_hash, subject_hash, row["id"]),
+            )
+        # Second pass: batch redact PII in one SQL statement
         cursor = conn.execute(
             """
             UPDATE email_processing_state
@@ -136,15 +156,9 @@ def scrub_draft_pii(draft_dir: Path) -> DraftScrubResult:
             payload["subject"] = "[redacted]"
             changed = True
         if changed:
-            item.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-            _chmod_owner_only(item)
+            tmp = item.with_suffix(".tmp")
+            tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+            _chmod_owner_only(tmp)
+            os.replace(tmp, item)
             updated_files += 1
     return DraftScrubResult(updated_files=updated_files)
-
-
-def _hash_value(value: str | None) -> str | None:
-    if value in (None, ""):
-        return None
-    return hashlib.sha256(str(value).encode("utf-8")).hexdigest()
-
-

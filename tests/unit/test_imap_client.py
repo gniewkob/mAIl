@@ -285,6 +285,45 @@ def test_delete_message_rolls_back_deleted_flag_when_deleted_set_changes(monkeyp
     assert connection.expunge_calls == 0
 
 
+def test_fetch_candidates_filters_non_numeric_uids():
+    """fetch_candidates must drop UIDs that are not purely numeric."""
+    from unittest.mock import MagicMock
+    from pydantic import SecretStr
+    from mail_ai_agent.config import MailboxConfig
+    from mail_ai_agent.imap_client import IMAPClient
+
+    mailbox = MailboxConfig(
+        mailbox_id="test",
+        imap_host="h",
+        imap_user="u@h",
+        imap_pass=SecretStr("p"),
+    )
+    client = IMAPClient(mailbox)
+
+    mock_conn = MagicMock()
+    client.connection = mock_conn
+
+    mock_conn.select.return_value = ("OK", [b"1"])
+    mock_conn.response.return_value = ("OK", [b"12345"])
+
+    def fake_run_with_retry(op_name, func):
+        return func()
+
+    client._run_with_retry = fake_run_with_retry
+
+    mock_conn.uid.side_effect = [
+        ("OK", [b"42 99 INJECT"]),  # SEARCH: mix of valid + invalid
+        ("OK", []),                  # FETCH result (empty, doesn't matter)
+    ]
+
+    messages = client.fetch_candidates("INBOX")
+    fetch_call = mock_conn.uid.call_args_list[1]
+    uid_arg = fetch_call[0][1]  # second positional arg to uid("fetch", uid_set, ...)
+    assert "INJECT" not in uid_arg, f"Non-numeric UID 'INJECT' must be filtered, got: {uid_arg}"
+    assert "42" in uid_arg
+    assert "99" in uid_arg
+
+
 def test_copy_message_returns_target_uid_from_copyuid(monkeypatch) -> None:
     mailbox = make_mailbox()
     connection = FakeFlakyConnection()

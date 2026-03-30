@@ -74,3 +74,24 @@ def test_draft_store_save_sets_restricted_permissions(tmp_path: Path) -> None:
     path = store.save(email, decision, fingerprint="perm1234")
 
     assert stat.S_IMODE(os.stat(path).st_mode) == 0o600
+
+
+def test_draft_save_is_atomic(tmp_path, monkeypatch):
+    """DraftStore.save() must write via tmp+os.replace, not direct write_text on the target."""
+    write_text_calls = []
+    original_write_text = Path.write_text
+
+    def tracking_write_text(self, *args, **kwargs):
+        write_text_calls.append(str(self))
+        return original_write_text(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "write_text", tracking_write_text)
+
+    store = DraftStore(tmp_path / "drafts")
+    email = _make_email()
+    decision = _make_decision()
+    result_path = store.save(email, decision, "abc123")
+
+    direct_writes = [p for p in write_text_calls if p == str(result_path)]
+    assert not direct_writes, "DraftStore.save() must use tmp+os.replace, not direct write_text"
+    assert result_path.exists()

@@ -7,6 +7,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from .utils import _chmod_owner_only
+
 
 class AuditLogger:
     REDACTED_FIELDS = {"message_id", "sender", "subject", "draft_path"}
@@ -40,9 +42,3 @@ class AuditLogger:
         return sanitized
 
 
-def _chmod_owner_only(path: Path) -> None:
-    try:
-        mode = 0o700 if path.is_dir() else 0o600
-        os.chmod(path, mode)
-    except OSError:
-        pass

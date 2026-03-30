@@ -172,6 +172,115 @@ def test_scrub_state_pii_redacts_existing_rows(tmp_path: Path) -> None:
     assert redacted.subject_sha256 is not None
 
 
+def test_rotate_audit_log_uses_rename_not_copy(tmp_path, monkeypatch):
+    """rotate_audit_log must rename original (atomic) — not copy+truncate."""
+    import shutil
+    from mail_ai_agent.maintenance import rotate_audit_log
+
+    log_path = tmp_path / "audit.jsonl"
+    log_path.write_text("x" * 200, encoding="utf-8")
+
+    copy2_called = []
+    original_copy2 = shutil.copy2
+
+    def tracking_copy2(*args, **kwargs):
+        copy2_called.append(args)
+        return original_copy2(*args, **kwargs)
+
+    monkeypatch.setattr(shutil, "copy2", tracking_copy2)
+    result = rotate_audit_log(log_path, max_bytes=100)
+
+    assert result.rotated is True
+    assert not copy2_called, "rotate_audit_log must use rename (Path.replace), not shutil.copy2"
+    archive = log_path.with_suffix(".jsonl.1")
+    assert archive.exists()
+    assert archive.read_text() == "x" * 200
+    assert log_path.exists()
+    assert log_path.read_text() == ""
+
+
+def test_scrub_state_pii_preserves_sha256_hashes(tmp_path):
+    """scrub_state_pii must compute sender/subject sha256 for rows with NULL hashes before wiping PII."""
+    import hashlib
+    import sqlite3
+    from mail_ai_agent.state_manager import StateManager
+    from mail_ai_agent.maintenance import scrub_state_pii
+
+    db_path = tmp_path / "state.sqlite"
+    # Initialise schema by creating StateManager
+    StateManager(db_path)
+
+    # Insert a row directly with NULL sha256 fields (simulating rows created by older code)
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            """
+            INSERT INTO email_processing_state
+                (mailbox_id, message_id, fingerprint, imap_uid, source_folder,
+                 sender, subject, status, attempt_count, lock_owner,
+                 sender_sha256, subject_sha256, created_at, updated_at, lock_expires_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            ("test", "<m@test>", "fp1", "1", "INBOX",
+             "alice@example.com", "Hello World", "pending", 0, "w",
+             None, None,  # <-- intentionally NULL hashes
+             "2024-01-01T00:00:00+00:00", "2024-01-01T00:00:00+00:00", "2024-01-02T00:00:00+00:00"),
+        )
+
+    scrub_state_pii(db_path)
+
+    with sqlite3.connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        row = conn.execute("SELECT * FROM email_processing_state WHERE fingerprint = 'fp1'").fetchone()
+
+    assert row["sender"] == "[redacted]", f"sender not redacted: {row['sender']}"
+    assert row["subject"] == "[redacted]", f"subject not redacted: {row['subject']}"
+
+    expected_sender_hash = hashlib.sha256("alice@example.com".encode()).hexdigest()
+    expected_subject_hash = hashlib.sha256("Hello World".encode()).hexdigest()
+    assert row["sender_sha256"] == expected_sender_hash, (
+        f"sender_sha256 should be computed before wipe, got: {row['sender_sha256']}"
+    )
+    assert row["subject_sha256"] == expected_subject_hash, (
+        f"subject_sha256 should be computed before wipe, got: {row['subject_sha256']}"
+    )
+
+
+def test_scrub_draft_pii_uses_atomic_write(tmp_path, monkeypatch):
+    """scrub_draft_pii must write via tmp+os.replace, not direct write_text on the original file."""
+    import json
+    import os
+    from pathlib import Path
+    from mail_ai_agent.maintenance import scrub_draft_pii
+
+    draft_dir = tmp_path / "drafts"
+    draft_dir.mkdir()
+    draft_file = draft_dir / "test.json"
+    draft_file.write_text(json.dumps({
+        "sender": "alice@example.com",
+        "subject": "Hello",
+        "draft_reply": "Hi",
+    }), encoding="utf-8")
+
+    write_text_calls = []
+    original_write_text = Path.write_text
+
+    def tracking_write_text(self, *args, **kwargs):
+        write_text_calls.append(str(self))
+        return original_write_text(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "write_text", tracking_write_text)
+    scrub_draft_pii(draft_dir)
+
+    payload = json.loads(draft_file.read_text())
+    assert payload["sender"] == "[redacted]"
+    assert "sender_sha256" in payload
+
+    direct_writes_to_original = [p for p in write_text_calls if p == str(draft_file)]
+    assert not direct_writes_to_original, (
+        "scrub_draft_pii must not write directly to the original draft file — use tmp+os.replace"
+    )
+
+
 def test_scrub_draft_pii_redacts_sender_and_subject(tmp_path: Path) -> None:
     draft = tmp_path / "draft.json"
     draft.write_text(
