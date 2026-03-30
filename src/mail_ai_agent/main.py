@@ -10,6 +10,7 @@ from .draft_store import DraftStore
 from .email_parser import compute_content_fingerprint, compute_message_fingerprint, parse_email
 from .imap_client import IMAPAuthError, IMAPClient
 from .llm_gateway import LLMGateway
+from .folder_mapper import target_folders
 from .rule_engine import evaluate_rules
 from .schemas import LeaseAcquireResult, MailboxProcessingReport, ParsedEmail, ProcessingReport, WorkflowStatus
 from .state_manager import MOVE_CLEANUP_PENDING_ACTION, StateManager
@@ -140,18 +141,6 @@ def _refresh_worker_lock(*, state: StateManager, settings: Settings) -> None:
         raise RuntimeError(f"Worker lock lost during processing: {result.reason}")
 
 
-def _target_folders(mailbox: MailboxConfig) -> list[str]:
-    return [
-        mailbox.imap_uncertain_folder,
-        mailbox.imap_appointments_folder,
-        mailbox.imap_questions_folder,
-        mailbox.imap_complaints_folder,
-        mailbox.imap_other_folder,
-        mailbox.imap_billing_folder,
-        mailbox.imap_system_folder,
-    ]
-
-
 def _run_cleanup_pass(
     *,
     mailbox: MailboxConfig,
@@ -260,7 +249,7 @@ def _process_mailbox(
     with IMAPClient(mailbox) as imap:
         imap.validate_routing_setup(
             source_folder=mailbox.imap_source_folder,
-            target_folders=_target_folders(mailbox),
+            target_folders=target_folders(mailbox),
             dry_run=settings.dry_run,
         )
         if not settings.dry_run:

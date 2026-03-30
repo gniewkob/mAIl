@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import functools
 import re
 
 from .config import MailboxConfig
@@ -49,11 +50,11 @@ MARKETING_REGEX = re.compile(
 )
 
 
-def _billing_email_pattern(mailbox: "MailboxConfig") -> "re.Pattern | None":
-    email = getattr(mailbox, "billing_payment_email", None)
-    if not email:
+@functools.lru_cache(maxsize=64)
+def _billing_email_pattern(billing_email: str | None) -> "re.Pattern | None":
+    if not billing_email:
         return None
-    return re.compile(re.escape(email), flags=re.IGNORECASE)
+    return re.compile(re.escape(billing_email), flags=re.IGNORECASE)
 
 
 def evaluate_rules(parsed_email: ParsedEmail, mailbox: MailboxConfig) -> RuleDecision:
@@ -103,7 +104,7 @@ def evaluate_rules(parsed_email: ParsedEmail, mailbox: MailboxConfig) -> RuleDec
             reason="marketing or outreach pattern matched",
         )
 
-    billing_pat = _billing_email_pattern(mailbox)
+    billing_pat = _billing_email_pattern(getattr(mailbox, "billing_payment_email", None))
     if billing_pat and billing_pat.search(combined):
         return RuleDecision(
             category="billing",
