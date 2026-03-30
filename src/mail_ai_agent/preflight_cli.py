@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import stat
 from pathlib import Path
 
 from .config import Settings
@@ -18,7 +19,7 @@ def main() -> None:
     if args.env_file:
         env_path = Path(args.env_file)
         if env_path.exists():
-            env_stat_mode = oct(env_path.stat().st_mode)[-3:]
+            env_stat_mode = oct(stat.S_IMODE(env_path.stat().st_mode))[-3:]
             if env_stat_mode != "600":
                 print(f"[WARN] {env_path} permissions are {env_stat_mode} — should be 600 (run: chmod 600 {env_path})")
             else:
