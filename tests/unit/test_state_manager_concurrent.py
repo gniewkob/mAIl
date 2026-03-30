@@ -18,28 +18,31 @@ def test_acquire_lease_concurrent_only_one_succeeds(tmp_path: Path) -> None:
     errors: list[Exception] = []
     barrier = threading.Barrier(2)
 
-    def try_acquire() -> None:
-        try:
-            barrier.wait()  # synchronize start
-            result = manager.acquire_lease(
-                mailbox_id="default",
-                message_id="<concurrent@example.com>",
-                fingerprint=FINGERPRINT,
-                imap_uid="10",
-                uidvalidity="999",
-                sender="test@example.com",
-                subject="Test concurrent",
-                source_folder="INBOX",
-                internaldate=None,
-                worker_id="worker-a",
-                lease_seconds=300,
-                max_retries=3,
-            )
-            outcomes.append(result.outcome)
-        except Exception as e:
-            errors.append(e)
+    def make_acquire_fn(worker_id: str):
+        def try_acquire() -> None:
+            try:
+                barrier.wait(timeout=10)  # synchronize start; timeout prevents indefinite hang
+                result = manager.acquire_lease(
+                    mailbox_id="default",
+                    message_id="<concurrent@example.com>",
+                    fingerprint=FINGERPRINT,
+                    imap_uid="10",
+                    uidvalidity="999",
+                    sender="test@example.com",
+                    subject="Test concurrent",
+                    source_folder="INBOX",
+                    internaldate=None,
+                    worker_id=worker_id,
+                    lease_seconds=300,
+                    max_retries=3,
+                )
+                outcomes.append(result.outcome)
+            except Exception as e:
+                errors.append(e)
 
-    threads = [threading.Thread(target=try_acquire) for _ in range(2)]
+        return try_acquire
+
+    threads = [threading.Thread(target=make_acquire_fn(wid)) for wid in ("worker-a", "worker-b")]
     for t in threads:
         t.start()
     for t in threads:

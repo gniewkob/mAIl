@@ -166,6 +166,7 @@ class StateManager:
         now = datetime.now(timezone.utc)
         expires_at = now + timedelta(seconds=lease_seconds)
         with self._connect() as conn:
+            conn.execute("BEGIN EXCLUSIVE")
             identity_rows = self._lookup_identity_rows(conn, mailbox_id, message_id, fingerprint, content_fingerprint)
             if self._is_identity_conflict(identity_rows):
                 row = next((row for row in identity_rows if row is not None), None)
@@ -267,7 +268,11 @@ class StateManager:
                     ),
                 )
             except sqlite3.IntegrityError:
-                # Another thread/process inserted the same row concurrently; treat as locked.
+                # IntegrityError can indicate a UNIQUE-constraint violation from a concurrent insert
+                # race (the primary defence), but may also arise from other constraint failures.
+                # We attempt a fresh lookup; if a matching row is found it was a race and we return
+                # "locked". If no row is found the error is from a different constraint — the re-raise
+                # below is the safety net for those cases.
                 conflict_row = self._lookup_identity_rows(conn, mailbox_id, message_id, fingerprint, content_fingerprint)
                 row = next((r for r in conflict_row if r is not None), None)
                 if row is not None:
