@@ -96,21 +96,24 @@ def summarize_audit_records(records: list[dict[str, Any]]) -> dict[str, Any]:
 def export_audit_csv(records: list[dict[str, Any]], destination: Path) -> None:
     destination.parent.mkdir(parents=True, exist_ok=True)
     fieldnames = sorted({key for record in records for key in record.keys()})
-    with destination.open("w", encoding="utf-8", newline="") as handle:
+    tmp = destination.with_suffix(".tmp")
+    with tmp.open("w", encoding="utf-8", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=fieldnames)
         writer.writeheader()
         for record in records:
             writer.writerow(record)
+    tmp.replace(destination)
 
 
 def export_state_csv(db_path: Path, destination: Path) -> int:
     destination.parent.mkdir(parents=True, exist_ok=True)
+    tmp = destination.with_suffix(".tmp")
     with sqlite3.connect(db_path) as conn:
         conn.row_factory = sqlite3.Row
         cursor = conn.execute("SELECT * FROM email_processing_state ORDER BY id")
         fieldnames: list[str] | None = None
         row_count = 0
-        with destination.open("w", encoding="utf-8", newline="") as handle:
+        with tmp.open("w", encoding="utf-8", newline="") as handle:
             writer = None
             for row in cursor:
                 if fieldnames is None:
@@ -120,8 +123,7 @@ def export_state_csv(db_path: Path, destination: Path) -> int:
                 assert writer is not None
                 writer.writerow(dict(row))
                 row_count += 1
-        if row_count == 0:
-            destination.write_text("", encoding="utf-8")
+    tmp.replace(destination)
     return row_count
 
 

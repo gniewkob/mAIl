@@ -147,3 +147,34 @@ def test_load_audit_records_skips_malformed_lines(tmp_path: Path) -> None:
     assert len(records) == 2
     assert records[0]["action_taken"] == "ok"
     assert records[1]["action_taken"] == "also_ok"
+
+
+def test_export_audit_csv_writes_atomically(tmp_path: Path) -> None:
+    from mail_ai_agent.reporting import export_audit_csv
+
+    dest = tmp_path / "out.csv"
+    records = [{"action_taken": "move", "status_after": "processed"}]
+    export_audit_csv(records, dest)
+    assert dest.exists()
+    assert not dest.with_suffix(".tmp").exists()
+    content = dest.read_text(encoding="utf-8")
+    assert "action_taken" in content
+    assert "move" in content
+
+
+def test_export_state_csv_writes_atomically(tmp_path: Path) -> None:
+    from mail_ai_agent.reporting import export_state_csv
+    from mail_ai_agent.state_manager import StateManager
+
+    db = tmp_path / "state.sqlite"
+    StateManager(db).acquire_lease(
+        mailbox_id="mb", message_id="m1", fingerprint="fp1", imap_uid="1",
+        sender="a@b.com", subject="Hi", source_folder="INBOX",
+        internaldate=None, worker_id="w", lease_seconds=60, max_retries=3,
+    )
+    dest = tmp_path / "state.csv"
+    count = export_state_csv(db, dest)
+    assert count == 1
+    assert dest.exists()
+    assert not dest.with_suffix(".tmp").exists()
+    assert "fingerprint" in dest.read_text(encoding="utf-8")
