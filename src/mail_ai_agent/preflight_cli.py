@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+from pathlib import Path
 
 from .config import Settings
 from .imap_client import IMAPClient
@@ -12,6 +13,16 @@ def main() -> None:
     parser.add_argument("--env-file", default=None, help="Optional env file path")
     parser.add_argument("--mailbox-id", default=None, help="Optional mailbox id filter")
     args = parser.parse_args()
+
+    # Check .env file permissions if provided
+    if args.env_file:
+        env_path = Path(args.env_file)
+        if env_path.exists():
+            env_stat_mode = oct(env_path.stat().st_mode)[-3:]
+            if env_stat_mode != "600":
+                print(f"[WARN] {env_path} permissions are {env_stat_mode} — should be 600 (run: chmod 600 {env_path})")
+            else:
+                print(f"[OK]   {env_path} permissions: {env_stat_mode}")
 
     settings = Settings(_env_file=args.env_file) if args.env_file else Settings()
     mailboxes = settings.load_mailboxes()
