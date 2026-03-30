@@ -11,11 +11,10 @@ from mail_ai_agent.state_manager import MOVE_CLEANUP_PENDING_ACTION, StateManage
 
 
 class FakeCleanupIMAPClient:
-    deleted: list[tuple[str, str]] = []
-    validated: list[tuple[str, tuple[str, ...], bool]] = []
-
     def __init__(self, mailbox) -> None:
         self.mailbox = mailbox
+        self.deleted: list[tuple[str, str]] = []
+        self.validated: list[tuple[str, tuple[str, ...], bool]] = []
 
     def __enter__(self) -> "FakeCleanupIMAPClient":
         return self
@@ -66,10 +65,14 @@ def seed_cleanup_pending_record(state_db: Path) -> StateManager:
 def test_cleanup_cli_apply_marks_cleanup_done_after_success(monkeypatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     state_db = tmp_path / "state.sqlite"
     manager = seed_cleanup_pending_record(state_db)
-    FakeCleanupIMAPClient.deleted = []
-    FakeCleanupIMAPClient.validated = []
+    instances: list[FakeCleanupIMAPClient] = []
 
-    monkeypatch.setattr("mail_ai_agent.cleanup_cli.IMAPClient", FakeCleanupIMAPClient)
+    class CapturingClient(FakeCleanupIMAPClient):
+        def __init__(self, mailbox) -> None:
+            super().__init__(mailbox)
+            instances.append(self)
+
+    monkeypatch.setattr("mail_ai_agent.cleanup_cli.IMAPClient", CapturingClient)
     monkeypatch.setattr(
         sys,
         "argv",
@@ -87,7 +90,7 @@ def test_cleanup_cli_apply_marks_cleanup_done_after_success(monkeypatch, tmp_pat
 
     payload = json.loads(capsys.readouterr().out)
     assert payload["count"] == 1
-    assert FakeCleanupIMAPClient.deleted == [("INBOX.AI-Review", "42")]
+    assert instances[0].deleted == [("INBOX.AI-Review", "42")]
     record = manager.get_by_message_id("user_example_com", "msg-1")
     assert record is not None
     assert record.action_taken == "cleanup_source"
@@ -99,7 +102,6 @@ def test_cleanup_cli_does_not_mark_done_when_delete_fails(
 ) -> None:
     state_db = tmp_path / "state.sqlite"
     manager = seed_cleanup_pending_record(state_db)
-    FakeFailingDeleteIMAPClient.deleted = []
 
     monkeypatch.setattr("mail_ai_agent.cleanup_cli.IMAPClient", FakeFailingDeleteIMAPClient)
     monkeypatch.setattr(
@@ -156,14 +158,17 @@ def test_cleanup_continues_after_single_delete_failure(tmp_path: Path, monkeypat
     state_db = tmp_path / "state.sqlite"
     manager = seed_three_cleanup_pending_records(state_db)
 
+    instances: list[FakeCleanupIMAPClient] = []
+
     class FakePartialFailIMAPClient(FakeCleanupIMAPClient):
+        def __init__(self, mailbox) -> None:
+            super().__init__(mailbox)
+            instances.append(self)
+
         def delete_message(self, folder: str, uid: str) -> None:
             if uid == "41":  # first UID fails
                 raise RuntimeError("simulated delete failure")
             super().delete_message(folder, uid)
-
-    FakePartialFailIMAPClient.deleted = []
-    FakePartialFailIMAPClient.expunged = []
 
     monkeypatch.setattr("mail_ai_agent.cleanup_cli.IMAPClient", FakePartialFailIMAPClient)
     monkeypatch.setattr(

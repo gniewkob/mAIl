@@ -50,6 +50,62 @@ def test_high_confidence_complaint_gets_flagged() -> None:
     assert decision.draft_reply is not None
 
 
+def test_draft_reply_suppressed_below_draft_confidence_threshold() -> None:
+    """draft_reply must be None when confidence is below draft_confidence_threshold (0.85)."""
+    settings = make_settings()
+    mailbox = settings.load_mailboxes()[0]
+    # confidence is above move_threshold (0.75) but below draft_threshold (0.85)
+    decision = decide_from_llm(
+        make_classification(confidence=0.80, requires_reply=True, draft_reply="Draft text"),
+        settings,
+        mailbox,
+    )
+
+    assert decision.final_status == WorkflowStatus.PROCESSED
+    assert decision.draft_reply is None
+
+
+def test_draft_reply_preserved_at_draft_confidence_threshold() -> None:
+    """draft_reply must be propagated when confidence equals draft_confidence_threshold (0.85)."""
+    settings = make_settings()
+    mailbox = settings.load_mailboxes()[0]
+    decision = decide_from_llm(
+        make_classification(confidence=0.85, requires_reply=True, draft_reply="Draft text"),
+        settings,
+        mailbox,
+    )
+
+    assert decision.final_status == WorkflowStatus.PROCESSED
+    assert decision.draft_reply == "Draft text"
+
+
+def test_draft_reply_preserved_above_draft_confidence_threshold() -> None:
+    """draft_reply must be propagated when confidence is above draft_confidence_threshold (0.85)."""
+    settings = make_settings()
+    mailbox = settings.load_mailboxes()[0]
+    decision = decide_from_llm(
+        make_classification(confidence=0.95, requires_reply=True, draft_reply="Draft text"),
+        settings,
+        mailbox,
+    )
+
+    assert decision.final_status == WorkflowStatus.PROCESSED
+    assert decision.draft_reply == "Draft text"
+
+
+def test_draft_reply_suppressed_when_requires_reply_false() -> None:
+    """draft_reply must be None when requires_reply is False even if confidence is high."""
+    settings = make_settings()
+    mailbox = settings.load_mailboxes()[0]
+    decision = decide_from_llm(
+        make_classification(confidence=0.95, requires_reply=False, draft_reply="Draft text"),
+        settings,
+        mailbox,
+    )
+
+    assert decision.draft_reply is None
+
+
 def test_rule_decision_propagates_flag_requirement() -> None:
     decision = decide_from_rule(
         RuleDecision(
