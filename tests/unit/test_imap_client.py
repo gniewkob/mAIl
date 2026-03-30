@@ -106,7 +106,7 @@ def test_copy_message_retries_after_abort(monkeypatch) -> None:
     mailbox = make_mailbox()
     connections = [FakeFlakyConnection(fail_copy_times=1), FakeFlakyConnection(fail_copy_times=0)]
 
-    def fake_ssl(host: str, port: int):
+    def fake_ssl(host: str, port: int, **kwargs):
         assert host == mailbox.imap_host
         assert port == mailbox.imap_port
         return connections.pop(0)
@@ -122,7 +122,7 @@ def test_fetch_candidates_retries_after_abort(monkeypatch) -> None:
     mailbox = make_mailbox()
     connections = [FakeFlakyConnection(fail_search_times=1), FakeFlakyConnection(fail_search_times=0)]
 
-    monkeypatch.setattr("mail_ai_agent.imap_client.imaplib.IMAP4_SSL", lambda *_: connections.pop(0))
+    monkeypatch.setattr("mail_ai_agent.imap_client.imaplib.IMAP4_SSL", lambda *_, **__: connections.pop(0))
     monkeypatch.setattr("mail_ai_agent.imap_client.time.sleep", lambda _: None)
 
     with IMAPClient(mailbox) as client:
@@ -137,7 +137,7 @@ def test_fetch_candidates_uses_search_criterion_and_limit(monkeypatch) -> None:
     mailbox = make_mailbox().model_copy(update={"imap_search_criterion": "UNSEEN", "imap_fetch_limit": 2})
     connection = FakeFlakyConnection(search_uids=b"40 41 42")
 
-    monkeypatch.setattr("mail_ai_agent.imap_client.imaplib.IMAP4_SSL", lambda *_: connection)
+    monkeypatch.setattr("mail_ai_agent.imap_client.imaplib.IMAP4_SSL", lambda *_, **__: connection)
     monkeypatch.setattr("mail_ai_agent.imap_client.time.sleep", lambda _: None)
 
     with IMAPClient(mailbox) as client:
@@ -203,7 +203,7 @@ def test_get_uidvalidity_reads_folder_metadata(monkeypatch) -> None:
     mailbox = make_mailbox()
     connection = FakeFlakyConnection()
 
-    monkeypatch.setattr("mail_ai_agent.imap_client.imaplib.IMAP4_SSL", lambda *_: connection)
+    monkeypatch.setattr("mail_ai_agent.imap_client.imaplib.IMAP4_SSL", lambda *_, **__: connection)
     monkeypatch.setattr("mail_ai_agent.imap_client.time.sleep", lambda _: None)
 
     with IMAPClient(mailbox) as client:
@@ -217,7 +217,7 @@ def test_validate_routing_setup_requires_uidplus_or_explicit_override(monkeypatc
     connection = FakeFlakyConnection()
     connection.capabilities = {b"IMAP4REV1"}
 
-    monkeypatch.setattr("mail_ai_agent.imap_client.imaplib.IMAP4_SSL", lambda *_: connection)
+    monkeypatch.setattr("mail_ai_agent.imap_client.imaplib.IMAP4_SSL", lambda *_, **__: connection)
     monkeypatch.setattr("mail_ai_agent.imap_client.time.sleep", lambda _: None)
 
     with IMAPClient(mailbox) as client:
@@ -237,7 +237,7 @@ def test_delete_message_uses_uid_expunge_when_supported(monkeypatch) -> None:
     mailbox = make_mailbox()
     connection = FakeFlakyConnection()
 
-    monkeypatch.setattr("mail_ai_agent.imap_client.imaplib.IMAP4_SSL", lambda *_: connection)
+    monkeypatch.setattr("mail_ai_agent.imap_client.imaplib.IMAP4_SSL", lambda *_, **__: connection)
     monkeypatch.setattr("mail_ai_agent.imap_client.time.sleep", lambda _: None)
 
     with IMAPClient(mailbox) as client:
@@ -249,7 +249,7 @@ def test_delete_message_refuses_folder_expunge_when_other_deleted_messages_exist
     connection = FakeFlakyConnection(deleted_search_uids=b"41")
     connection.capabilities = {b"IMAP4REV1"}
 
-    monkeypatch.setattr("mail_ai_agent.imap_client.imaplib.IMAP4_SSL", lambda *_: connection)
+    monkeypatch.setattr("mail_ai_agent.imap_client.imaplib.IMAP4_SSL", lambda *_, **__: connection)
     monkeypatch.setattr("mail_ai_agent.imap_client.time.sleep", lambda _: None)
 
     with IMAPClient(mailbox) as client:
@@ -269,7 +269,7 @@ def test_delete_message_rolls_back_deleted_flag_when_deleted_set_changes(monkeyp
     connection = FakeFlakyConnection(deleted_search_uids=b"42 41")
     connection.capabilities = {b"IMAP4REV1"}
 
-    monkeypatch.setattr("mail_ai_agent.imap_client.imaplib.IMAP4_SSL", lambda *_: connection)
+    monkeypatch.setattr("mail_ai_agent.imap_client.imaplib.IMAP4_SSL", lambda *_, **__: connection)
     monkeypatch.setattr("mail_ai_agent.imap_client.time.sleep", lambda _: None)
 
     with IMAPClient(mailbox) as client:
@@ -330,7 +330,7 @@ def test_copy_message_returns_target_uid_from_copyuid(monkeypatch) -> None:
     mailbox = make_mailbox()
     connection = FakeFlakyConnection()
 
-    monkeypatch.setattr("mail_ai_agent.imap_client.imaplib.IMAP4_SSL", lambda *_: connection)
+    monkeypatch.setattr("mail_ai_agent.imap_client.imaplib.IMAP4_SSL", lambda *_, **__: connection)
     monkeypatch.setattr("mail_ai_agent.imap_client.time.sleep", lambda _: None)
 
     with IMAPClient(mailbox) as client:
@@ -388,7 +388,7 @@ def test_connect_raises_imap_auth_error_on_auth_failure(monkeypatch) -> None:
         def logout(self) -> tuple[str, list[bytes]]:
             return ("BYE", [b"logout"])
 
-    monkeypatch.setattr("mail_ai_agent.imap_client.imaplib.IMAP4_SSL", lambda host, port: FakeAuthFailConnection())
+    monkeypatch.setattr("mail_ai_agent.imap_client.imaplib.IMAP4_SSL", lambda host, port, **kwargs: FakeAuthFailConnection())
     client = IMAPClient(make_mailbox())
     with pytest.raises(IMAPAuthError, match="IMAP authentication failed"):
         client._connect_and_login()
@@ -405,8 +405,28 @@ def test_connect_reraises_non_auth_imap_error(monkeypatch) -> None:
         def logout(self) -> tuple[str, list[bytes]]:
             return ("BYE", [b"logout"])
 
-    monkeypatch.setattr("mail_ai_agent.imap_client.imaplib.IMAP4_SSL", lambda host, port: FakeGenericErrorConnection())
+    monkeypatch.setattr("mail_ai_agent.imap_client.imaplib.IMAP4_SSL", lambda host, port, **kwargs: FakeGenericErrorConnection())
     client = IMAPClient(make_mailbox())
     with pytest.raises(_imaplib.IMAP4.error):
         client._connect_and_login()
     # Must NOT be wrapped in IMAPAuthError
+
+
+def test_imap4_ssl_receives_ssl_context(monkeypatch) -> None:
+    """IMAP4_SSL must be called with an explicit ssl_context for hostname verification."""
+    import ssl as _ssl
+    captured: list[dict] = []
+
+    def fake_ssl(host: str, port: int, *, ssl_context=None) -> FakeFlakyConnection:
+        captured.append({"ssl_context": ssl_context})
+        return FakeFlakyConnection()
+
+    monkeypatch.setattr("mail_ai_agent.imap_client.imaplib.IMAP4_SSL", fake_ssl)
+    client = IMAPClient(make_mailbox())
+    client._connect_and_login()
+
+    assert len(captured) == 1
+    ctx = captured[0]["ssl_context"]
+    assert ctx is not None, "ssl_context must be passed to IMAP4_SSL"
+    assert isinstance(ctx, _ssl.SSLContext)
+    assert ctx.verify_mode == _ssl.CERT_REQUIRED

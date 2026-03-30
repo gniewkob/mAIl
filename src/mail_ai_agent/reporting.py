@@ -65,7 +65,10 @@ def load_audit_records(path: Path) -> list[dict[str, Any]]:
             line = line.strip()
             if not line:
                 continue
-            records.append(json.loads(line))
+            try:
+                records.append(json.loads(line))
+            except json.JSONDecodeError:
+                continue
     return records
 
 

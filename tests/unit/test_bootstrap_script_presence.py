@@ -2,9 +2,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
+_REPO_ROOT = Path(__file__).parent.parent.parent
+
 
 def test_bootstrap_script_exists() -> None:
-    path = Path("scripts/bootstrap.sh")
+    path = _REPO_ROOT / "scripts" / "bootstrap.sh"
     assert path.exists()
     content = path.read_text(encoding="utf-8")
     assert "pip install -r requirements.txt" in content

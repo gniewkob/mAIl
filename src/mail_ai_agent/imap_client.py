@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import imaplib
+import ssl
 import re as _re
 import warnings
 import time
@@ -47,7 +48,11 @@ class IMAPClient(AbstractContextManager["IMAPClient"]):
                 pass
 
     def _connect_and_login(self) -> None:
-        self.connection = imaplib.IMAP4_SSL(self.mailbox.imap_host, self.mailbox.imap_port)
+        self.connection = imaplib.IMAP4_SSL(
+            self.mailbox.imap_host,
+            self.mailbox.imap_port,
+            ssl_context=ssl.create_default_context(),
+        )
         try:
             self.connection.login(self.mailbox.imap_user, self.mailbox.imap_pass.get_secret_value())
         except imaplib.IMAP4.error as exc:

@@ -281,6 +281,60 @@ def test_scrub_draft_pii_uses_atomic_write(tmp_path, monkeypatch):
     )
 
 
+def test_scrub_state_pii_is_idempotent(tmp_path: Path) -> None:
+    """Running scrub_state_pii twice must not corrupt hashes and must return 0 updated_rows on second run."""
+    import sqlite3 as _sqlite3
+
+    db_path = tmp_path / "state.sqlite"
+    conn = _sqlite3.connect(db_path)
+    conn.execute(
+        """
+        CREATE TABLE email_processing_state (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            mailbox_id TEXT NOT NULL DEFAULT 'default',
+            message_id TEXT,
+            fingerprint TEXT NOT NULL,
+            sender TEXT,
+            sender_sha256 TEXT,
+            subject TEXT,
+            subject_sha256 TEXT,
+            status TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )
+        """
+    )
+    conn.execute(
+        "INSERT INTO email_processing_state (fingerprint, sender, subject, status, created_at, updated_at) "
+        "VALUES (?, ?, ?, ?, datetime('now'), datetime('now'))",
+        ("fp-idempotency", "sender@example.com", "Test subject", "processed"),
+    )
+    conn.commit()
+    conn.close()
+
+    result1 = scrub_state_pii(db_path)
+    assert result1.updated_rows == 1
+
+    conn = _sqlite3.connect(db_path)
+    row = conn.execute(
+        "SELECT sender, sender_sha256, subject_sha256 FROM email_processing_state WHERE fingerprint = 'fp-idempotency'"
+    ).fetchone()
+    conn.close()
+    assert row[0] == "[redacted]"
+    assert row[1] is not None and len(row[1]) == 64
+    first_hash = row[1]
+
+    result2 = scrub_state_pii(db_path)
+    assert result2.updated_rows == 0
+
+    conn = _sqlite3.connect(db_path)
+    row2 = conn.execute(
+        "SELECT sender_sha256 FROM email_processing_state WHERE fingerprint = 'fp-idempotency'"
+    ).fetchone()
+    conn.close()
+    assert row2[0] == first_hash, "Hash must not change on second run"
+
+
 def test_scrub_draft_pii_redacts_sender_and_subject(tmp_path: Path) -> None:
     draft = tmp_path / "draft.json"
     draft.write_text(

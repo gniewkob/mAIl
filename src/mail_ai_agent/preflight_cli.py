@@ -6,6 +6,7 @@ import stat
 from pathlib import Path
 
 from .config import Settings
+from .folder_mapper import target_folders
 from .imap_client import IMAPClient
 
 
@@ -46,15 +47,7 @@ def main() -> None:
             with IMAPClient(mailbox) as imap:
                 imap.validate_routing_setup(
                     source_folder=mailbox.imap_source_folder,
-                    target_folders=[
-                        mailbox.imap_uncertain_folder,
-                        mailbox.imap_appointments_folder,
-                        mailbox.imap_questions_folder,
-                        mailbox.imap_complaints_folder,
-                        mailbox.imap_other_folder,
-                        mailbox.imap_billing_folder,
-                        mailbox.imap_system_folder,
-                    ],
+                    target_folders=target_folders(mailbox),
                     dry_run=settings.dry_run,
                 )
         except Exception as exc:  # pragma: no cover - exercised via CLI contract tests
