@@ -88,6 +88,31 @@ def scrub_state_pii(db_path: Path) -> StateScrubResult:
         return StateScrubResult(updated_rows=0)
 
     with sqlite3.connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        # First pass: compute and persist sha256 hashes for rows that have PII but NULL hashes
+        rows_needing_hash = conn.execute(
+            """
+            SELECT id, sender, subject
+            FROM email_processing_state
+            WHERE (sender_sha256 IS NULL AND sender IS NOT NULL AND sender != '' AND sender != '[redacted]')
+               OR (subject_sha256 IS NULL AND subject IS NOT NULL AND subject != '' AND subject != '[redacted]')
+            """
+        ).fetchall()
+        for row in rows_needing_hash:
+            sender = row["sender"]
+            subject = row["subject"]
+            sender_hash = _hash_value(sender) if sender not in (None, "", "[redacted]") else None
+            subject_hash = _hash_value(subject) if subject not in (None, "", "[redacted]") else None
+            conn.execute(
+                """
+                UPDATE email_processing_state
+                SET sender_sha256 = COALESCE(sender_sha256, ?),
+                    subject_sha256 = COALESCE(subject_sha256, ?)
+                WHERE id = ?
+                """,
+                (sender_hash, subject_hash, row["id"]),
+            )
+        # Second pass: batch redact PII in one SQL statement
         cursor = conn.execute(
             """
             UPDATE email_processing_state

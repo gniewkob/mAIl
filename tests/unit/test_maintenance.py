@@ -200,27 +200,31 @@ def test_rotate_audit_log_uses_rename_not_copy(tmp_path, monkeypatch):
 
 
 def test_scrub_state_pii_preserves_sha256_hashes(tmp_path):
-    """scrub_state_pii must compute sender_sha256/subject_sha256 before wiping PII."""
+    """scrub_state_pii must compute sender/subject sha256 for rows with NULL hashes before wiping PII."""
     import hashlib
     import sqlite3
     from mail_ai_agent.state_manager import StateManager
     from mail_ai_agent.maintenance import scrub_state_pii
 
     db_path = tmp_path / "state.sqlite"
-    sm = StateManager(db_path)
-    sm.acquire_lease(
-        mailbox_id="test",
-        message_id="<m@test>",
-        fingerprint="fp1",
-        imap_uid="1",
-        sender="alice@example.com",
-        subject="Hello World",
-        source_folder="INBOX",
-        internaldate=None,
-        worker_id="w",
-        lease_seconds=60,
-        max_retries=3,
-    )
+    # Initialise schema by creating StateManager
+    StateManager(db_path)
+
+    # Insert a row directly with NULL sha256 fields (simulating rows created by older code)
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            """
+            INSERT INTO email_processing_state
+                (mailbox_id, message_id, fingerprint, imap_uid, source_folder,
+                 sender, subject, status, attempt_count, lock_owner,
+                 sender_sha256, subject_sha256, created_at, updated_at, lock_expires_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            ("test", "<m@test>", "fp1", "1", "INBOX",
+             "alice@example.com", "Hello World", "pending", 0, "w",
+             None, None,  # <-- intentionally NULL hashes
+             "2024-01-01T00:00:00+00:00", "2024-01-01T00:00:00+00:00", "2024-01-02T00:00:00+00:00"),
+        )
 
     scrub_state_pii(db_path)
 
@@ -228,12 +232,17 @@ def test_scrub_state_pii_preserves_sha256_hashes(tmp_path):
         conn.row_factory = sqlite3.Row
         row = conn.execute("SELECT * FROM email_processing_state WHERE fingerprint = 'fp1'").fetchone()
 
-    assert row["sender"] == "[redacted]"
-    assert row["subject"] == "[redacted]"
+    assert row["sender"] == "[redacted]", f"sender not redacted: {row['sender']}"
+    assert row["subject"] == "[redacted]", f"subject not redacted: {row['subject']}"
+
     expected_sender_hash = hashlib.sha256("alice@example.com".encode()).hexdigest()
     expected_subject_hash = hashlib.sha256("Hello World".encode()).hexdigest()
-    assert row["sender_sha256"] == expected_sender_hash, f"sender_sha256 wrong: {row['sender_sha256']}"
-    assert row["subject_sha256"] == expected_subject_hash, f"subject_sha256 wrong: {row['subject_sha256']}"
+    assert row["sender_sha256"] == expected_sender_hash, (
+        f"sender_sha256 should be computed before wipe, got: {row['sender_sha256']}"
+    )
+    assert row["subject_sha256"] == expected_subject_hash, (
+        f"subject_sha256 should be computed before wipe, got: {row['subject_sha256']}"
+    )
 
 
 def test_scrub_draft_pii_redacts_sender_and_subject(tmp_path: Path) -> None:
