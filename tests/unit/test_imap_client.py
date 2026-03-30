@@ -59,7 +59,20 @@ class FakeFlakyConnection:
             return ("OK", [self.search_uids])
         if command == "fetch":
             self.fetch_args.append(args)
-            return ("OK", [(b'1 (INTERNALDATE "26-Mar-2026 10:00:00 +0000")', b"Subject: Test\n\nBody")])
+            # Build one response entry per UID in the batch set
+            uid_set = args[0] if args else b""
+            uids = uid_set.split(b",") if isinstance(uid_set, bytes) else uid_set.split(",")
+            response = []
+            for i, u in enumerate(uids, start=1):
+                u_str = u.decode() if isinstance(u, bytes) else str(u)
+                response.append(
+                    (
+                        f'{i} (UID {u_str} INTERNALDATE "26-Mar-2026 10:00:00 +0000" BODY[] {{17}}'.encode(),
+                        b"Subject: Test\n\nBody",
+                    )
+                )
+                response.append(b")")
+            return ("OK", response)
         if command == "store":
             self.store_calls.append(args)
             return ("OK", [b"stored"])
@@ -131,7 +144,57 @@ def test_fetch_candidates_uses_search_criterion_and_limit(monkeypatch) -> None:
     assert connection.search_args == (None, "UNSEEN")
     assert [candidate.uid for candidate in candidates] == ["41", "42"]
     assert all(candidate.uidvalidity == "999" for candidate in candidates)
-    assert [args[0] for args in connection.fetch_args] == [b"41", b"42"]
+    # Batch FETCH: exactly one fetch call with comma-separated UIDs
+    assert len(connection.fetch_args) == 1
+    assert connection.fetch_args[0][0] == "41,42"
+
+
+def test_fetch_candidates_uses_single_batch_command():
+    """N UIDs must produce exactly 1 FETCH command, not N."""
+    from unittest.mock import MagicMock
+    from pydantic import SecretStr
+    from mail_ai_agent.imap_client import IMAPClient
+    from mail_ai_agent.config import MailboxConfig
+    import email as _email
+
+    mailbox = MailboxConfig(
+        mailbox_id="test", imap_host="imap.example.com",
+        imap_user="u@example.com", imap_pass=SecretStr("secret"),
+        imap_fetch_limit=3,
+    )
+    client = IMAPClient(mailbox)
+    mock_conn = MagicMock()
+    client.connection = mock_conn
+
+    # Build a minimal raw email
+    msg = _email.message.EmailMessage()
+    msg["From"] = "a@b.com"
+    msg["Subject"] = "Test"
+    msg["Message-ID"] = "<t@t.com>"
+    msg.set_content("hello")
+    raw = msg.as_bytes()
+
+    mock_conn.select.return_value = ("OK", [b"3"])
+    mock_conn.response.return_value = (None, [b"12345"])
+
+    batch_response = [
+        (b'1 (UID 1 INTERNALDATE "01-Jan-2024 00:00:00 +0000" BODY[] {' + str(len(raw)).encode() + b'}', raw),
+        b')',
+        (b'2 (UID 2 INTERNALDATE "01-Jan-2024 00:00:00 +0000" BODY[] {' + str(len(raw)).encode() + b'}', raw),
+        b')',
+    ]
+    mock_conn.uid.side_effect = [
+        ("OK", [b"1 2"]),          # SEARCH
+        ("OK", batch_response),    # single batch FETCH
+    ]
+
+    results = client.fetch_candidates("INBOX.Test")
+
+    assert mock_conn.uid.call_count == 2, f"Expected 2 calls (search + batch fetch), got {mock_conn.uid.call_count}"
+    fetch_call = mock_conn.uid.call_args_list[1]
+    uid_arg = fetch_call[0][1]
+    assert "," in str(uid_arg), f"Expected comma-separated UIDs, got: {uid_arg}"
+    assert len(results) == 2
 
 
 def test_get_uidvalidity_reads_folder_metadata(monkeypatch) -> None:

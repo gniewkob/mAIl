@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import shlex
 from pathlib import Path
 
@@ -61,7 +62,14 @@ def main() -> None:
     _write_manifest(Path(args.output), payload)
 
     if args.sidecar_output:
-        Path(args.sidecar_output).write_text("\n".join(sidecar_lines) + ("\n" if sidecar_lines else ""), encoding="utf-8")
+        sidecar_path = Path(args.sidecar_output)
+        sidecar_path.write_text(
+            "\n".join(sidecar_lines) + ("\n" if sidecar_lines else ""), encoding="utf-8"
+        )
+        try:
+            os.chmod(sidecar_path, 0o600)
+        except OSError:
+            pass
     elif sidecar_lines:
         print("\n".join(sidecar_lines))
 

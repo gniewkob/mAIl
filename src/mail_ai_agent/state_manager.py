@@ -22,6 +22,8 @@ class StateManager:
     def _connect(self) -> sqlite3.Connection:
         connection = sqlite3.connect(self.db_path)
         connection.row_factory = sqlite3.Row
+        connection.execute("PRAGMA journal_mode=WAL")
+        connection.execute("PRAGMA busy_timeout=5000")
         return connection
 
     def _initialize(self) -> None:
@@ -102,6 +104,7 @@ class StateManager:
         now = datetime.now(timezone.utc)
         expires_at = now + timedelta(seconds=lease_seconds)
         with self._connect() as conn:
+            conn.execute("BEGIN EXCLUSIVE")
             row = conn.execute(
                 "SELECT * FROM worker_runtime_lock WHERE lock_name = ?",
                 ("main",),

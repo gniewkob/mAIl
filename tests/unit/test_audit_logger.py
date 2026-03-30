@@ -27,3 +27,15 @@ def test_audit_logger_can_keep_plaintext_fields_when_redaction_disabled(tmp_path
     payload = json.loads((tmp_path / "audit.jsonl").read_text(encoding="utf-8").splitlines()[0])
     assert payload["message_id"] == "mid-1"
     assert payload["sender"] == "a@example.com"
+
+
+def test_audit_log_entry_readable_immediately(tmp_path):
+    import json
+
+    from mail_ai_agent.audit_logger import AuditLogger
+
+    logger = AuditLogger(tmp_path / "audit.jsonl", redact_pii=False)
+    logger.log(action="test", value="hello")
+    lines = (tmp_path / "audit.jsonl").read_text(encoding="utf-8").strip().splitlines()
+    assert len(lines) == 1
+    assert json.loads(lines[0])["value"] == "hello"

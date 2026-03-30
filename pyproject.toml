@@ -20,6 +20,9 @@ dev = [
   "pytest>=8.0,<9",
 ]
 
+[project.scripts]
+mail-ai-admin-notify = "mail_ai_agent.admin_notify_cli:main"
+
 [tool.setuptools]
 package-dir = {"" = "src"}
 

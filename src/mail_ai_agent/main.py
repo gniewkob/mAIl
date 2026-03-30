@@ -12,7 +12,7 @@ from .email_parser import compute_content_fingerprint, compute_message_fingerpri
 from .imap_client import IMAPClient
 from .llm_gateway import LLMGateway
 from .rule_engine import evaluate_rules
-from .schemas import MailboxProcessingReport, ProcessingReport, WorkflowStatus
+from .schemas import LeaseAcquireResult, MailboxProcessingReport, ParsedEmail, ProcessingReport, WorkflowStatus
 from .state_manager import MOVE_CLEANUP_PENDING_ACTION, StateManager
 
 
@@ -463,6 +463,7 @@ def _process_mailbox(
                             parsed_email=parsed,
                             decision=decision,
                             fingerprint=fingerprint,
+                            redact_pii=settings.state_redact_pii,
                         )
                     )
 
@@ -588,10 +589,10 @@ def _log_skip(
     *,
     audit: AuditLogger,
     mailbox: MailboxConfig,
-    parsed,
+    parsed: ParsedEmail,
     fingerprint: str,
     candidate_uid: str,
-    lease,
+    lease: LeaseAcquireResult,
     dry_run: bool,
     duration_ms: int,
 ) -> None:

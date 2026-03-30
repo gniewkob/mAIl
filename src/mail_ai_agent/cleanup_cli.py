@@ -43,6 +43,7 @@ def main() -> None:
         print(json.dumps(payload, ensure_ascii=False, indent=2))
         return
 
+    failed_uids: list[str] = []
     with IMAPClient(mailbox) as imap:
         imap.validate_routing_setup(
             source_folder=mailbox.imap_source_folder,
@@ -53,11 +54,18 @@ def main() -> None:
         for record in candidates:
             if not record.imap_uid:
                 continue
-            imap.delete_message(mailbox.imap_source_folder, record.imap_uid)
-            cleaned_record_ids.append(record.id)
+            try:
+                imap.delete_message(mailbox.imap_source_folder, record.imap_uid)
+                cleaned_record_ids.append(record.id)
+            except Exception as exc:
+                import sys
+                failed_uids.append(record.imap_uid)
+                print(f"[WARN] Failed to clean UID {record.imap_uid}: {exc}", file=sys.stderr)
         for record_id in cleaned_record_ids:
             state.mark_cleanup_done(record_id)
 
+    if failed_uids:
+        payload["failed_uids"] = failed_uids
     print(json.dumps(payload, ensure_ascii=False, indent=2))
 
 

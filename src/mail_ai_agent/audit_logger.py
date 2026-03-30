@@ -24,6 +24,8 @@ class AuditLogger:
         }
         with self.path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(record, ensure_ascii=False) + "\n")
+            handle.flush()
+            os.fsync(handle.fileno())
         _chmod_owner_only(self.path)
 
     def _sanitize_payload(self, payload: dict[str, Any]) -> dict[str, Any]:

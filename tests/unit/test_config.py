@@ -146,3 +146,32 @@ def test_unsupported_imap_search_criterion_is_rejected() -> None:
             IMAP_PASS="secret",
             IMAP_SEARCH_CRITERION='TEXT "hello world"',
         )
+
+
+def test_normalize_mailbox_respects_zero_fetch_limit(tmp_path: Path) -> None:
+    import json
+    from mail_ai_agent.config import Settings
+    manifest = tmp_path / "mailboxes.json"
+    manifest.write_text(json.dumps([{
+        "imap_user": "u@example.com", "imap_pass": "secret",
+        "imap_host": "imap.example.com", "imap_fetch_limit": 0,
+    }]), encoding="utf-8")
+    settings = Settings(IMAP_HOST="fallback.example.com", MAILBOXES_CONFIG_PATH=str(manifest))
+    mailboxes = settings.load_mailboxes()
+    assert mailboxes[0].imap_fetch_limit == 0
+
+
+def test_audit_less_restrictive_than_state_raises():
+    import pytest
+    from pydantic import ValidationError
+
+    with pytest.raises((ValueError, ValidationError)):
+        from mail_ai_agent.config import Settings
+
+        Settings(
+            IMAP_HOST="h",
+            IMAP_USER="u",
+            IMAP_PASS="p",
+            AUDIT_REDACT_PII=False,
+            STATE_REDACT_PII=True,
+        )

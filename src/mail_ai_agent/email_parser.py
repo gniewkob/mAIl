@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import html
 import re
-from datetime import datetime
+from datetime import datetime, timezone
 from email import policy
 from email.parser import BytesParser
 from email.utils import parsedate_to_datetime
@@ -144,10 +144,6 @@ def compute_content_fingerprint(parsed_email: ParsedEmail) -> str:
     return hashlib.sha256(source.encode("utf-8")).hexdigest()
 
 
-def compute_fingerprint(parsed_email: ParsedEmail) -> str:
-    return compute_message_fingerprint(parsed_email)
-
-
 def _safe_part_content(part) -> str:
     try:
         content = part.get_content()
@@ -179,7 +175,7 @@ def _normalize_message_id(value: str | None) -> str:
 def _normalize_date(value: datetime | None) -> str:
     if value is None:
         return ""
-    return value.astimezone().isoformat()
+    return value.astimezone(timezone.utc).isoformat()
 
 
 def _matches_any(value: str, patterns: tuple[str, ...]) -> bool:

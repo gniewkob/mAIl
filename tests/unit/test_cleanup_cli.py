@@ -115,10 +115,75 @@ def test_cleanup_cli_does_not_mark_done_when_delete_fails(
     monkeypatch.setenv("IMAP_PASS", "secret")
     monkeypatch.setenv("STATE_DB_PATH", str(state_db))
 
-    with pytest.raises(RuntimeError, match="delete failed"):
-        main()
+    main()
 
     record = manager.get_by_message_id("user_example_com", "msg-1")
     assert record is not None
     assert record.action_taken == MOVE_CLEANUP_PENDING_ACTION
     assert record.status.value == "cleanup_pending"
+
+
+def seed_three_cleanup_pending_records(state_db: Path) -> StateManager:
+    manager = StateManager(state_db)
+    for i in range(1, 4):
+        acquired = manager.acquire_lease(
+            mailbox_id="user_example_com",
+            message_id=f"msg-{i}",
+            fingerprint=f"fp-{i}",
+            imap_uid=str(40 + i),
+            sender="client@example.com",
+            subject=f"Subject {i}",
+            source_folder="INBOX.AI-Review",
+            internaldate=None,
+            worker_id="worker-1",
+            lease_seconds=60,
+            max_retries=3,
+        )
+        assert acquired.record is not None
+        manager.mark_move_cleanup_pending(
+            acquired.record.id,
+            category="question",
+            confidence=0.9,
+            target_folder="INBOX.Questions",
+            error_message="delete failed",
+            error_type="RuntimeError",
+        )
+    return manager
+
+
+def test_cleanup_continues_after_single_delete_failure(tmp_path: Path, monkeypatch) -> None:
+    """If record 1 delete fails, records 2 and 3 must still be cleaned."""
+    state_db = tmp_path / "state.sqlite"
+    manager = seed_three_cleanup_pending_records(state_db)
+
+    class FakePartialFailIMAPClient(FakeCleanupIMAPClient):
+        def delete_message(self, folder: str, uid: str) -> None:
+            if uid == "41":  # first UID fails
+                raise RuntimeError("simulated delete failure")
+            super().delete_message(folder, uid)
+
+    FakePartialFailIMAPClient.deleted = []
+    FakePartialFailIMAPClient.expunged = []
+
+    monkeypatch.setattr("mail_ai_agent.cleanup_cli.IMAPClient", FakePartialFailIMAPClient)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["cleanup_cli", "--apply"],
+    )
+    monkeypatch.setenv("IMAP_HOST", "imap.example.com")
+    monkeypatch.setenv("IMAP_USER", "user@example.com")
+    monkeypatch.setenv("IMAP_PASS", "secret")
+    monkeypatch.setenv("STATE_DB_PATH", str(state_db))
+
+    main()
+
+    # Records 2 and 3 (UIDs 42, 43) should be processed
+    record2 = manager.get_by_message_id("user_example_com", "msg-2")
+    record3 = manager.get_by_message_id("user_example_com", "msg-3")
+    assert record2 is not None and record2.status.value == "processed"
+    assert record3 is not None and record3.status.value == "processed"
+
+    # Record 1 (UID 41) should still be cleanup_pending
+    record1 = manager.get_by_message_id("user_example_com", "msg-1")
+    assert record1 is not None and record1.status.value == "cleanup_pending"

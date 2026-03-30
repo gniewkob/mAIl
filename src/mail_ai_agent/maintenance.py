@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 import shutil
 import sqlite3
 from dataclasses import dataclass
@@ -8,6 +7,8 @@ from datetime import datetime, timedelta, timezone
 import hashlib
 import json
 from pathlib import Path
+
+from .utils import _chmod_owner_only
 
 
 @dataclass
@@ -53,6 +54,7 @@ def rotate_audit_log(path: Path, *, max_bytes: int, backup_count: int = 5) -> Ro
 
     archive = path.with_suffix(path.suffix + ".1")
     shutil.copy2(path, archive)
+    _chmod_owner_only(archive)
     path.write_text("", encoding="utf-8")
     return RotationResult(rotated=True, archive_path=archive, original_size=size)
 
@@ -76,6 +78,29 @@ def prune_drafts(draft_dir: Path, *, older_than_days: int) -> DraftPruneResult:
     return DraftPruneResult(removed=removed, kept=kept)
 
 
+@dataclass
+class StateScrubResult:
+    updated_rows: int
+
+
+def scrub_state_pii(db_path: Path) -> StateScrubResult:
+    if not db_path.exists():
+        return StateScrubResult(updated_rows=0)
+
+    with sqlite3.connect(db_path) as conn:
+        cursor = conn.execute(
+            """
+            UPDATE email_processing_state
+            SET sender = '[redacted]', subject = '[redacted]'
+            WHERE (sender IS NOT NULL AND sender != '' AND sender != '[redacted]')
+               OR (subject IS NOT NULL AND subject != '' AND subject != '[redacted]')
+            """
+        )
+        updated_rows = cursor.rowcount
+
+    return StateScrubResult(updated_rows=updated_rows)
+
+
 def maintain_sqlite(db_path: Path) -> dict[str, str]:
     if not db_path.exists():
         return {"status": "missing"}
@@ -85,36 +110,6 @@ def maintain_sqlite(db_path: Path) -> dict[str, str]:
         conn.execute("PRAGMA wal_checkpoint(FULL)")
         conn.execute("VACUUM")
     return {"status": "ok", "integrity_check": str(integrity)}
-
-
-def scrub_state_pii(db_path: Path) -> StateScrubResult:
-    if not db_path.exists():
-        return StateScrubResult(updated_rows=0)
-
-    updated_rows = 0
-    with sqlite3.connect(db_path) as conn:
-        conn.row_factory = sqlite3.Row
-        rows = conn.execute(
-            "SELECT id, sender, sender_sha256, subject, subject_sha256 FROM email_processing_state"
-        ).fetchall()
-        for row in rows:
-            sender = row["sender"]
-            subject = row["subject"]
-            sender_sha = row["sender_sha256"] or _hash_value(sender)
-            subject_sha = row["subject_sha256"] or _hash_value(subject)
-            new_sender = "[redacted]" if sender not in (None, "", "[redacted]") else sender
-            new_subject = "[redacted]" if subject not in (None, "", "[redacted]") else subject
-            if new_sender != sender or new_subject != subject or sender_sha != row["sender_sha256"] or subject_sha != row["subject_sha256"]:
-                conn.execute(
-                    """
-                    UPDATE email_processing_state
-                    SET sender = ?, sender_sha256 = ?, subject = ?, subject_sha256 = ?
-                    WHERE id = ?
-                    """,
-                    (new_sender, sender_sha, new_subject, subject_sha, row["id"]),
-                )
-                updated_rows += 1
-    return StateScrubResult(updated_rows=updated_rows)
 
 
 def scrub_draft_pii(draft_dir: Path) -> DraftScrubResult:
@@ -153,9 +148,3 @@ def _hash_value(value: str | None) -> str | None:
     return hashlib.sha256(str(value).encode("utf-8")).hexdigest()
 
 
-def _chmod_owner_only(path: Path) -> None:
-    try:
-        mode = 0o700 if path.is_dir() else 0o600
-        os.chmod(path, mode)
-    except OSError:
-        pass

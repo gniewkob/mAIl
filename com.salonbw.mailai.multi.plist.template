@@ -18,6 +18,12 @@
     <key>WorkingDirectory</key>
     <string>/Users/REPLACE_ME/Repos/priv/mAIl</string>
 
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PYTHONPATH</key>
+        <string>/Users/REPLACE_ME/Repos/priv/mAIl</string>
+    </dict>
+
     <key>RunAtLoad</key>
     <true/>
 
