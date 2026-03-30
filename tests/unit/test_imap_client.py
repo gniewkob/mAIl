@@ -412,6 +412,20 @@ def test_connect_reraises_non_auth_imap_error(monkeypatch) -> None:
     # Must NOT be wrapped in IMAPAuthError
 
 
+def test_fetch_candidates_returns_empty_list_when_search_data_is_none(monkeypatch) -> None:
+    """dovecot variants return [None] for empty folder; must not crash with AttributeError."""
+    mailbox = make_mailbox()
+    connection = FakeFlakyConnection(search_uids=None)  # type: ignore[arg-type]
+
+    monkeypatch.setattr("mail_ai_agent.imap_client.imaplib.IMAP4_SSL", lambda *_, **__: connection)
+    monkeypatch.setattr("mail_ai_agent.imap_client.time.sleep", lambda _: None)
+
+    with IMAPClient(mailbox) as client:
+        candidates = client.fetch_candidates("INBOX.AI-Review")
+
+    assert candidates == []
+
+
 def test_imap4_ssl_receives_ssl_context(monkeypatch) -> None:
     """IMAP4_SSL must be called with an explicit ssl_context for hostname verification."""
     import ssl as _ssl
