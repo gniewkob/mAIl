@@ -11,6 +11,51 @@ from .schemas import WorkflowStatus
 from .state_manager import MOVE_CLEANUP_PENDING_ACTION
 
 
+def tail_audit_records(path: Path, n: int) -> list[dict[str, Any]]:
+    """Read the last n JSONL records from an audit log without loading the full file."""
+    if not path.exists():
+        return []
+    if n <= 0:
+        return []
+
+    chunk_size = 8192
+    collected_lines: list[bytes] = []
+    total_complete = 0
+
+    with path.open("rb") as handle:
+        handle.seek(0, 2)  # seek to end
+        file_size = handle.tell()
+        position = file_size
+        remainder = b""
+
+        while position > 0 and total_complete < n:
+            read_size = min(chunk_size, position)
+            position -= read_size
+            handle.seek(position)
+            chunk = handle.read(read_size) + remainder
+            lines = chunk.split(b"\n")
+            remainder = lines[0]
+            for line in reversed(lines[1:]):
+                stripped = line.strip()
+                if stripped:
+                    collected_lines.append(stripped)
+                    total_complete += 1
+                    if total_complete >= n:
+                        break
+
+        # Don't forget the remainder if we reached start of file
+        if position == 0 and total_complete < n and remainder.strip():
+            collected_lines.append(remainder.strip())
+
+    records: list[dict[str, Any]] = []
+    for line in reversed(collected_lines):
+        try:
+            records.append(json.loads(line))
+        except json.JSONDecodeError:
+            continue
+    return records
+
+
 def load_audit_records(path: Path) -> list[dict[str, Any]]:
     if not path.exists():
         return []

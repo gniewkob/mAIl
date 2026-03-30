@@ -9,6 +9,7 @@ from mail_ai_agent.reporting import (
     load_audit_records,
     summarize_audit_records,
     summarize_state,
+    tail_audit_records,
 )
 from mail_ai_agent.state_manager import MOVE_CLEANUP_PENDING_ACTION, StateManager
 
@@ -101,3 +102,32 @@ def test_state_reporting_summary_and_csv(tmp_path: Path) -> None:
     assert summary["cleanup_pending"] == 1
     assert exported_rows == 2
     assert csv_path.exists()
+
+
+def test_tail_audit_records_reads_last_n_lines(tmp_path: Path) -> None:
+    """tail_audit_records must return last N records without loading whole file."""
+    log_path = tmp_path / "audit.jsonl"
+    records = [{"timestamp": f"2024-01-01T00:00:0{i}Z", "n": i} for i in range(10)]
+    log_path.write_text("\n".join(json.dumps(r) for r in records) + "\n", encoding="utf-8")
+
+    result = tail_audit_records(log_path, 3)
+    assert len(result) == 3
+    assert result[0]["n"] == 7
+    assert result[1]["n"] == 8
+    assert result[2]["n"] == 9
+
+
+def test_tail_audit_records_returns_all_when_fewer_than_n(tmp_path: Path) -> None:
+    """tail_audit_records returns all records when file has fewer than n lines."""
+    log_path = tmp_path / "audit.jsonl"
+    records = [{"n": i} for i in range(3)]
+    log_path.write_text("\n".join(json.dumps(r) for r in records) + "\n", encoding="utf-8")
+
+    result = tail_audit_records(log_path, 10)
+    assert len(result) == 3
+
+
+def test_tail_audit_records_missing_file_returns_empty(tmp_path: Path) -> None:
+    """tail_audit_records returns [] for non-existent file."""
+    result = tail_audit_records(tmp_path / "missing.jsonl", 5)
+    assert result == []

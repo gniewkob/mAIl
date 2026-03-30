@@ -8,7 +8,7 @@ from .config import MailboxConfig, Settings
 from .decision_engine import decide_from_llm, decide_from_rule
 from .draft_store import DraftStore
 from .email_parser import compute_content_fingerprint, compute_message_fingerprint, parse_email
-from .imap_client import IMAPClient
+from .imap_client import IMAPAuthError, IMAPClient
 from .llm_gateway import LLMGateway
 from .rule_engine import evaluate_rules
 from .schemas import LeaseAcquireResult, MailboxProcessingReport, ParsedEmail, ProcessingReport, WorkflowStatus
@@ -57,6 +57,25 @@ def process_mailboxes(settings: Settings) -> ProcessingReport:
                     drafts=drafts,
                     llm=llm,
                 )
+            except IMAPAuthError as exc:
+                LOGGER.critical("IMAP authentication failed for mailbox %s: %s", mailbox.mailbox_id, exc)
+                audit.log(
+                    level="CRITICAL",
+                    mailbox_id=mailbox.mailbox_id,
+                    mailbox_user=mailbox.imap_user,
+                    source_folder=mailbox.imap_source_folder,
+                    status_before=None,
+                    status_after="imap_auth_failed",
+                    action_taken="imap_auth_failed",
+                    error=str(exc),
+                    dry_run=settings.dry_run,
+                )
+                mailbox_report = MailboxProcessingReport(
+                    mailbox_id=mailbox.mailbox_id,
+                    mailbox_user=mailbox.imap_user,
+                    failed=1,
+                    imap_auth_failed=True,
+                )
             except Exception as exc:  # pragma: no cover - mailbox isolation guard
                 LOGGER.exception("Mailbox processing failed before completion for %s", mailbox.mailbox_id)
                 audit.log(
@@ -89,6 +108,8 @@ def process_mailboxes(settings: Settings) -> ProcessingReport:
             report.failed += mailbox_report.failed
             report.skipped += mailbox_report.skipped
             report.conflicts += mailbox_report.conflicts
+            if mailbox_report.imap_auth_failed:
+                report.imap_auth_failures += 1
     finally:
         state.release_worker_lock(worker_id=settings.worker_id)
     return report

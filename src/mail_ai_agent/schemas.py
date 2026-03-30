@@ -166,6 +166,7 @@ class MailboxProcessingReport(BaseModel):
     failed: int = 0
     skipped: int = 0
     conflicts: int = 0
+    imap_auth_failed: bool = False
 
 
 class ProcessingReport(BaseModel):
@@ -184,5 +185,6 @@ class ProcessingReport(BaseModel):
     skipped: int = 0
     conflicts: int = 0
     worker_lock_denied: bool = False
+    imap_auth_failures: int = 0
     mailboxes_processed: int = 0
     mailbox_reports: list[MailboxProcessingReport] = Field(default_factory=list)

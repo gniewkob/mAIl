@@ -6,10 +6,13 @@ import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from .reporting import load_audit_records, summarize_state
+from .reporting import load_audit_records, summarize_state, tail_audit_records
 
 
 def _recent_records(path: Path, limit: int, *, max_age_minutes: int | None) -> list[dict]:
+    if max_age_minutes is None and limit > 0:
+        # Fast path: tail-read only the last N records without loading the full file
+        return tail_audit_records(path, limit)
     records = load_audit_records(path)
     if max_age_minutes is not None and max_age_minutes >= 0:
         cutoff = datetime.now(timezone.utc) - timedelta(minutes=max_age_minutes)
