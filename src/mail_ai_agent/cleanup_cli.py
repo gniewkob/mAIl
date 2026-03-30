@@ -45,18 +45,26 @@ def main() -> None:
         print(json.dumps(payload, ensure_ascii=False, indent=2))
         return
 
+    failed_uids: list[str] = []
     with IMAPClient(mailbox) as imap:
         cleaned_record_ids: list[int] = []
         for record in candidates:
             if not record.imap_uid:
                 continue
-            imap.mark_deleted(mailbox.imap_source_folder, record.imap_uid)
-            cleaned_record_ids.append(record.id)
+            try:
+                imap.mark_deleted(mailbox.imap_source_folder, record.imap_uid)
+                cleaned_record_ids.append(record.id)
+            except Exception as exc:
+                import sys
+                failed_uids.append(record.imap_uid)
+                print(f"[WARN] Failed to clean UID {record.imap_uid}: {exc}", file=sys.stderr)
         if args.expunge and candidates:
             imap.expunge(mailbox.imap_source_folder)
         for record_id in cleaned_record_ids:
             state.mark_cleanup_done(record_id)
 
+    if failed_uids:
+        payload["failed_uids"] = failed_uids
     print(json.dumps(payload, ensure_ascii=False, indent=2))
 
 
