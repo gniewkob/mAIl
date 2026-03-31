@@ -8,6 +8,7 @@ from pathlib import Path
 
 from typing import cast
 
+from .config import Settings
 from .reporting import load_audit_records, summarize_state, tail_audit_records
 
 
@@ -38,6 +39,7 @@ def build_health_payload(
     *,
     state_db: Path,
     audit_log: Path,
+    env_file: Path | None = None,
     stdout_log: Path | None,
     stderr_log: Path | None,
     recent_audit_limit: int,
@@ -48,6 +50,7 @@ def build_health_payload(
     state = summarize_state(state_db)
     recent = _recent_records(audit_log, recent_audit_limit, max_age_minutes=recent_audit_max_age_minutes)
     issues: list[str] = []
+    config = _validate_runtime_config(env_file)
 
     statuses = cast(dict[str, object], state.get("statuses", {}))
     failed = int(cast(int, statuses.get("failed", 0)))
@@ -60,11 +63,15 @@ def build_health_payload(
         issues.append(f"state_cleanup_pending={cleanup_pending}")
     if uncertain > max_uncertain:
         issues.append(f"state_uncertain={uncertain} exceeds max_uncertain={max_uncertain}")
+    if not config["ok"]:
+        issues.append(f"config_error={config['error']}")
 
     recent_actions = [str(record.get("action_taken") or "") for record in recent]
     recent_statuses = [str(record.get("status_after") or "") for record in recent]
     if any(status == "mailbox_failed" for status in recent_statuses):
         issues.append("recent mailbox_failed present in audit log")
+    if any(status == "imap_auth_failed" for status in recent_statuses):
+        issues.append("recent imap_auth_failed present in audit log")
     if any(action == "cleanup_uidvalidity_mismatch" for action in recent_actions):
         issues.append("recent cleanup_uidvalidity_mismatch present in audit log")
     if any("Refusing folder-level expunge" in str(record.get("error") or "") for record in recent):
@@ -92,6 +99,7 @@ def build_health_payload(
             "failed": failed,
             "cleanup_pending": cleanup_pending,
         },
+        "config": config,
         "recent_audit_records_checked": len(recent),
         "recent_audit_max_age_minutes": recent_audit_max_age_minutes,
         "stdout_log_size": stdout_size,
@@ -100,8 +108,20 @@ def build_health_payload(
     return payload
 
 
+def _validate_runtime_config(env_file: Path | None) -> dict[str, object]:
+    if env_file is None:
+        return {"ok": True, "mailboxes_loaded": 0, "error": None, "checked": False}
+    try:
+        settings = Settings(_env_file=env_file) if env_file else Settings()  # type: ignore[call-arg]
+        mailboxes = settings.load_mailboxes()
+    except Exception as exc:
+        return {"ok": False, "mailboxes_loaded": 0, "error": str(exc), "checked": True}
+    return {"ok": True, "mailboxes_loaded": len(mailboxes), "error": None, "checked": True}
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Operational healthcheck for AI Mail Triage")
+    parser.add_argument("--env-file", default=None, help="Optional env file path")
     parser.add_argument("--audit-log", default="logs/audit.jsonl", help="Path to audit JSONL")
     parser.add_argument("--state-db", default="data/state.sqlite", help="Path to SQLite state DB")
     parser.add_argument("--stdout-log", default=None, help="Optional stdout log path")
@@ -120,6 +140,7 @@ def main() -> None:
     payload = build_health_payload(
         state_db=Path(args.state_db),
         audit_log=Path(args.audit_log),
+        env_file=Path(args.env_file) if args.env_file else None,
         stdout_log=Path(args.stdout_log) if args.stdout_log else None,
         stderr_log=Path(args.stderr_log) if args.stderr_log else None,
         recent_audit_limit=args.recent_audit_limit,

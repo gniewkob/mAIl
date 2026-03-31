@@ -38,11 +38,29 @@ def test_audit_reporting_summary_and_csv(tmp_path: Path) -> None:
     assert summary["actions"][MOVE_CLEANUP_PENDING_ACTION] == 1
     assert summary["statuses"]["processed"] == 2
     assert summary["mailboxes"]["inbox_a"] == 1
-    assert summary["cleanup_pending"] == 1
+    assert summary["cleanup_pending"] == 2
     assert summary["simulated"] == 1
     assert summary["cleanup_pass_processed"] == 1
     assert summary["cleanup_uidvalidity_mismatch"] == 1
     assert csv_path.exists()
+
+
+def test_audit_reporting_counts_all_cleanup_pending_statuses(tmp_path: Path) -> None:
+    audit_path = tmp_path / "audit.jsonl"
+    audit_path.write_text(
+        "\n".join(
+            [
+                json.dumps({"status_after": "cleanup_pending", "action_taken": MOVE_CLEANUP_PENDING_ACTION}),
+                json.dumps({"status_after": "cleanup_pending", "action_taken": "cleanup_uidvalidity_mismatch"}),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    summary = summarize_audit_records(load_audit_records(audit_path))
+
+    assert summary["cleanup_pending"] == 2
 
 
 def test_state_reporting_summary_and_csv(tmp_path: Path) -> None:
@@ -178,3 +196,47 @@ def test_export_state_csv_writes_atomically(tmp_path: Path) -> None:
     assert dest.exists()
     assert not dest.with_suffix(".tmp").exists()
     assert "fingerprint" in dest.read_text(encoding="utf-8")
+
+
+def test_summarize_state_closes_sqlite_connection(tmp_path: Path, monkeypatch) -> None:
+    import sqlite3
+
+    from mail_ai_agent import reporting
+
+    state_db = tmp_path / "state.sqlite"
+    with sqlite3.connect(state_db) as conn:
+        conn.execute("CREATE TABLE email_processing_state (id INTEGER PRIMARY KEY, mailbox_id TEXT, status TEXT)")
+
+    class TrackingConnection:
+        def __init__(self, inner):
+            self._inner = inner
+            self.closed = False
+
+        def __getattr__(self, name):
+            return getattr(self._inner, name)
+
+        def __enter__(self):
+            self._inner.__enter__()
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return self._inner.__exit__(exc_type, exc, tb)
+
+        def close(self) -> None:
+            self.closed = True
+            self._inner.close()
+
+    holder: dict[str, TrackingConnection] = {}
+    real_connect = reporting.sqlite3.connect
+
+    def tracked_connect(path):
+        wrapped = TrackingConnection(real_connect(path))
+        holder["conn"] = wrapped
+        return wrapped
+
+    monkeypatch.setattr(reporting.sqlite3, "connect", tracked_connect)
+
+    summary = reporting.summarize_state(state_db)
+
+    assert summary["records"] == 0
+    assert holder["conn"].closed is True

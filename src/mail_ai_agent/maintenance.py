@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import sqlite3
+from contextlib import closing
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 import json
@@ -140,7 +141,7 @@ def maintain_sqlite(db_path: Path) -> dict[str, str]:
     if not db_path.exists():
         return {"status": "missing"}
 
-    with sqlite3.connect(db_path) as conn:
+    with closing(sqlite3.connect(db_path)) as conn, conn:
         integrity = conn.execute("PRAGMA integrity_check").fetchone()[0]
         conn.execute("PRAGMA wal_checkpoint(FULL)")
         conn.execute("VACUUM")

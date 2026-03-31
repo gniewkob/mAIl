@@ -44,6 +44,7 @@ def send_webhook(*, webhook_url: str, message: str, payload: dict[str, object]) 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Webhook alert wrapper for AI Mail Triage healthcheck")
+    parser.add_argument("--env-file", default=None, help="Optional env file path")
     parser.add_argument("--audit-log", default="logs/audit.jsonl", help="Path to audit JSONL")
     parser.add_argument("--state-db", default="data/state.sqlite", help="Path to SQLite state DB")
     parser.add_argument("--stdout-log", default=None, help="Optional stdout log path")
@@ -59,6 +60,7 @@ def main() -> None:
     payload = build_health_payload(
         state_db=Path(args.state_db),
         audit_log=Path(args.audit_log),
+        env_file=Path(args.env_file) if args.env_file else None,
         stdout_log=Path(args.stdout_log) if args.stdout_log else None,
         stderr_log=Path(args.stderr_log) if args.stderr_log else None,
         recent_audit_limit=args.recent_audit_limit,

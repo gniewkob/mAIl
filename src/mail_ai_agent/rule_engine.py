@@ -37,6 +37,7 @@ COMPLAINT_REGEX = re.compile(
 )
 MARKETING_REGEX = re.compile(
     r"\b("
+    r"newsletter@|"
     r"seo|"
     r"leadgen|lead generation|pozyskiwani[ea] lead[oó]w?|"
     r"marketing\w*|marketing automation|"
@@ -44,6 +45,7 @@ MARKETING_REGEX = re.compile(
     r"cooperation|offer|ofert[ay]|"
     r"wsp[oó]łprac\w*|"
     r"agencj\w*|"
+    r"kup teraz|sprawd[zź]|specjalnie dla ciebie|"
     r"reprezentuj\w* agencj\w*"
     r")\b",
     flags=re.IGNORECASE,

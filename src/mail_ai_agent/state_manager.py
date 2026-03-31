@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import sqlite3
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -26,8 +27,17 @@ class StateManager:
         connection.execute("PRAGMA busy_timeout=5000")
         return connection
 
+    @contextmanager
+    def _managed_connection(self) -> sqlite3.Connection:
+        conn = self._connect()
+        try:
+            with conn:
+                yield conn
+        finally:
+            conn.close()
+
     def _initialize(self) -> None:
-        with self._connect() as conn:
+        with self._managed_connection() as conn:
             conn.executescript(
                 """
                 CREATE TABLE IF NOT EXISTS email_processing_state (
@@ -103,7 +113,7 @@ class StateManager:
     def acquire_worker_lock(self, *, worker_id: str, lease_seconds: int) -> WorkerLockResult:
         now = datetime.now(timezone.utc)
         expires_at = now + timedelta(seconds=lease_seconds)
-        with self._connect() as conn:
+        with self._managed_connection() as conn:
             conn.execute("BEGIN EXCLUSIVE")
             row = conn.execute(
                 "SELECT * FROM worker_runtime_lock WHERE lock_name = ?",
@@ -138,7 +148,7 @@ class StateManager:
             return WorkerLockResult(acquired=True, lock_owner=worker_id, reason="worker lock refreshed")
 
     def release_worker_lock(self, *, worker_id: str) -> None:
-        with self._connect() as conn:
+        with self._managed_connection() as conn:
             conn.execute(
                 "DELETE FROM worker_runtime_lock WHERE lock_name = ? AND lock_owner = ?",
                 ("main", worker_id),
@@ -165,7 +175,7 @@ class StateManager:
     ) -> LeaseAcquireResult:
         now = datetime.now(timezone.utc)
         expires_at = now + timedelta(seconds=lease_seconds)
-        with self._connect() as conn:
+        with self._managed_connection() as conn:
             conn.execute("BEGIN EXCLUSIVE")
             identity_rows = self._lookup_identity_rows(conn, mailbox_id, message_id, fingerprint, content_fingerprint)
             if self._is_identity_conflict(identity_rows):
@@ -394,14 +404,14 @@ class StateManager:
         )
 
     def get_by_id(self, record_id: int) -> EmailRecord | None:
-        with self._connect() as conn:
+        with self._managed_connection() as conn:
             row = conn.execute("SELECT * FROM email_processing_state WHERE id = ?", (record_id,)).fetchone()
         return self._row_to_record(row) if row else None
 
     def get_by_message_id(self, mailbox_id: str, message_id: str | None) -> EmailRecord | None:
         if message_id is None:
             return None
-        with self._connect() as conn:
+        with self._managed_connection() as conn:
             row = conn.execute(
                 "SELECT * FROM email_processing_state WHERE mailbox_id = ? AND message_id = ?",
                 (mailbox_id, message_id),
@@ -409,7 +419,7 @@ class StateManager:
         return self._row_to_record(row) if row else None
 
     def get_by_fingerprint(self, mailbox_id: str, fingerprint: str) -> EmailRecord | None:
-        with self._connect() as conn:
+        with self._managed_connection() as conn:
             row = conn.execute(
                 "SELECT * FROM email_processing_state WHERE mailbox_id = ? AND fingerprint = ?",
                 (mailbox_id, fingerprint),
@@ -417,7 +427,7 @@ class StateManager:
         return self._row_to_record(row) if row else None
 
     def list_cleanup_candidates(self, *, mailbox_id: str, source_folder: str) -> list[EmailRecord]:
-        with self._connect() as conn:
+        with self._managed_connection() as conn:
             rows = conn.execute(
                 """
                 SELECT *
@@ -436,9 +446,27 @@ class StateManager:
             ).fetchall()
         return [self._row_to_record(row) for row in rows]
 
+    def list_by_status(self, *, status: WorkflowStatus, mailbox_id: str | None = None) -> list[EmailRecord]:
+        with self._managed_connection() as conn:
+            if mailbox_id is None:
+                rows = conn.execute(
+                    "SELECT * FROM email_processing_state WHERE status = ? ORDER BY id",
+                    (status.value,),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT * FROM email_processing_state WHERE status = ? AND mailbox_id = ? ORDER BY id",
+                    (status.value, mailbox_id),
+                ).fetchall()
+        return [self._row_to_record(row) for row in rows]
+
+    def delete_record(self, record_id: int) -> None:
+        with self._managed_connection() as conn:
+            conn.execute("DELETE FROM email_processing_state WHERE id = ?", (record_id,))
+
     def mark_cleanup_done(self, record_id: int) -> None:
         now = datetime.now(timezone.utc).isoformat()
-        with self._connect() as conn:
+        with self._managed_connection() as conn:
             conn.execute(
                 """
                 UPDATE email_processing_state
@@ -506,7 +534,7 @@ class StateManager:
         model_latency_ms: int | None,
     ) -> None:
         now = datetime.now(timezone.utc).isoformat()
-        with self._connect() as conn:
+        with self._managed_connection() as conn:
             conn.execute(
                 """
                 UPDATE email_processing_state
@@ -538,5 +566,3 @@ class StateManager:
     @staticmethod
     def _row_to_record(row: sqlite3.Row) -> EmailRecord:
         return EmailRecord.model_validate(dict(row))
-
-

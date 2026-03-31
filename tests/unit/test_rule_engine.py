@@ -95,6 +95,19 @@ def test_rule_engine_catches_polish_inflections_for_marketing_offer() -> None:
     assert decision.category == "spam_or_offer"
 
 
+def test_rule_engine_catches_newsletter_sender_without_llm() -> None:
+    parsed = ParsedEmail(
+        sender="Rituals Cosmetics <newsletter@c.rituals.com>",
+        subject="Nowe wydanie Private Collection.",
+        normalized_body="Specjalnie dla Ciebie. Kup teraz i sprawdz nowa kolekcje.",
+    )
+
+    decision = evaluate_rules(parsed, make_mailbox())
+
+    assert decision.action == "skip_ai"
+    assert decision.category == "spam_or_offer"
+
+
 def test_category_to_folder_unknown_returns_source_folder():
     from mail_ai_agent.folder_mapper import category_to_folder
 

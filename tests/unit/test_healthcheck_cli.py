@@ -113,6 +113,35 @@ def test_build_health_payload_flags_recent_mailbox_failure_and_cleanup_pending(t
     assert "recent folder-level expunge refusal present in audit log" in issues
 
 
+def test_build_health_payload_flags_recent_imap_auth_failure(tmp_path: Path) -> None:
+    audit_path = tmp_path / "audit.jsonl"
+    audit_path.write_text(
+        json.dumps(
+            {
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "status_after": "imap_auth_failed",
+                "action_taken": "imap_auth_failed",
+                "error": "AUTHENTICATIONFAILED",
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    payload = build_health_payload(
+        state_db=tmp_path / "state.sqlite",
+        audit_log=audit_path,
+        stdout_log=None,
+        stderr_log=None,
+        recent_audit_limit=10,
+        recent_audit_max_age_minutes=60,
+        max_uncertain=0,
+    )
+
+    assert payload["ok"] is False
+    assert "recent imap_auth_failed present in audit log" in payload["issues"]
+
+
 def test_build_health_payload_ignores_old_audit_failures_outside_time_window(tmp_path: Path) -> None:
     state_path = tmp_path / "state.sqlite"
     audit_path = tmp_path / "audit.jsonl"
@@ -210,3 +239,37 @@ def test_build_health_payload_no_flag_below_llm_latency_threshold(tmp_path: Path
     )
 
     assert not any("llm_latency" in str(issue) for issue in payload["issues"])
+
+
+def test_build_health_payload_flags_runtime_config_error(monkeypatch, tmp_path: Path) -> None:
+    audit_log = tmp_path / "audit.jsonl"
+    stdout_log = tmp_path / "stdout.log"
+    stderr_log = tmp_path / "stderr.log"
+    audit_log.write_text("", encoding="utf-8")
+    stdout_log.write_text("", encoding="utf-8")
+    stderr_log.write_text("", encoding="utf-8")
+
+    monkeypatch.setattr(
+        "mail_ai_agent.healthcheck_cli._validate_runtime_config",
+        lambda env_file: {
+            "ok": False,
+            "mailboxes_loaded": 0,
+            "error": "Mailbox 'kontakt@salon-bw.pl' keychain secret 'mail-ai-prod/kontakt@salon-bw.pl' could not be read",
+        },
+    )
+
+    payload = build_health_payload(
+        state_db=tmp_path / "state.sqlite",
+        audit_log=audit_log,
+        env_file=tmp_path / ".env.multi.prod",
+        stdout_log=stdout_log,
+        stderr_log=stderr_log,
+        recent_audit_limit=10,
+        recent_audit_max_age_minutes=15,
+        max_uncertain=0,
+    )
+
+    assert payload["ok"] is False
+    assert payload["config"]["ok"] is False
+    assert "keychain secret" in str(payload["config"]["error"])
+    assert any(str(issue).startswith("config_error=") for issue in payload["issues"])

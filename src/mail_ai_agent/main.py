@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import logging
 from time import perf_counter
 
@@ -129,6 +130,10 @@ def _state_identity(value: str | None, *, redact: bool) -> str:
     if not redact:
         return value or ""
     return "[redacted]" if value else ""
+
+
+def _raw_message_fingerprint(raw_bytes: bytes) -> str:
+    return hashlib.sha256(raw_bytes).hexdigest()
 
 
 def _refresh_worker_lock(*, state: StateManager, settings: Settings) -> None:
@@ -266,9 +271,170 @@ def _process_mailbox(
         for candidate in candidates:
             _refresh_worker_lock(state=state, settings=settings)
             started = perf_counter()
-            parsed = parse_email(candidate.raw_bytes, settings)
-            fingerprint = compute_message_fingerprint(parsed)
-            content_fingerprint = compute_content_fingerprint(parsed)
+            try:
+                parsed = parse_email(candidate.raw_bytes, settings)
+                fingerprint = compute_message_fingerprint(parsed)
+                content_fingerprint = compute_content_fingerprint(parsed)
+            except Exception as exc:
+                LOGGER.exception("Failed to parse message for mailbox %s", mailbox.mailbox_id)
+                fingerprint = _raw_message_fingerprint(candidate.raw_bytes)
+                if settings.dry_run:
+                    audit.log(
+                        level="ERROR",
+                        mailbox_id=mailbox.mailbox_id,
+                        mailbox_user=mailbox.imap_user,
+                        source_folder=mailbox.imap_source_folder,
+                        message_id=candidate.message_id,
+                        fingerprint=fingerprint,
+                        imap_uid=candidate.uid,
+                        status_before=None,
+                        status_after="failed",
+                        action_taken="failed_parse",
+                        duration_ms=int((perf_counter() - started) * 1000),
+                        error=str(exc),
+                        dry_run=True,
+                    )
+                    report.failed += 1
+                    continue
+
+                lease = state.acquire_lease(
+                    mailbox_id=mailbox.mailbox_id,
+                    message_id=candidate.message_id,
+                    fingerprint=fingerprint,
+                    content_fingerprint=None,
+                    imap_uid=candidate.uid,
+                    uidvalidity=candidate.uidvalidity,
+                    sender="",
+                    sender_sha256=None,
+                    subject="",
+                    subject_sha256=None,
+                    source_folder=mailbox.imap_source_folder,
+                    internaldate=candidate.internaldate,
+                    worker_id=settings.worker_id,
+                    lease_seconds=settings.processing_lease_seconds,
+                    max_retries=settings.max_retries,
+                )
+                if lease.outcome != "acquired":
+                    audit.log(
+                        level="INFO",
+                        mailbox_id=mailbox.mailbox_id,
+                        mailbox_user=mailbox.imap_user,
+                        source_folder=mailbox.imap_source_folder,
+                        message_id=candidate.message_id,
+                        fingerprint=fingerprint,
+                        imap_uid=candidate.uid,
+                        status_before=lease.record.status.value if lease.record else None,
+                        status_after=lease.record.status.value if lease.record else None,
+                        action_taken=f"skip_{lease.outcome}",
+                        duration_ms=int((perf_counter() - started) * 1000),
+                        error=lease.reason,
+                        dry_run=False,
+                    )
+                    if lease.outcome == "conflict":
+                        report.conflicts += 1
+                    else:
+                        report.skipped += 1
+                    continue
+
+                record = lease.record
+                assert record is not None
+                target_uid: str | None = None
+                try:
+                    target_uid = imap.copy_message(
+                        mailbox.imap_source_folder,
+                        candidate.uid,
+                        mailbox.imap_uncertain_folder,
+                    )
+                    try:
+                        imap.delete_message(mailbox.imap_source_folder, candidate.uid)
+                    except Exception as cleanup_exc:
+                        LOGGER.exception(
+                            "Parse failure fallback copied message but source cleanup failed for mailbox %s",
+                            mailbox.mailbox_id,
+                        )
+                        state.mark_move_cleanup_pending(
+                            record.id,
+                            category="other",
+                            confidence=0.0,
+                            target_folder=mailbox.imap_uncertain_folder,
+                            target_uid=target_uid,
+                            draft_path=None,
+                            rule_hit=None,
+                            model_name=None,
+                            model_latency_ms=None,
+                            error_message=f"parse_failed: {exc}; cleanup_failed: {cleanup_exc}",
+                            error_type=cleanup_exc.__class__.__name__,
+                        )
+                        audit.log(
+                            level="ERROR",
+                            mailbox_id=mailbox.mailbox_id,
+                            mailbox_user=mailbox.imap_user,
+                            source_folder=mailbox.imap_source_folder,
+                            message_id=candidate.message_id,
+                            fingerprint=fingerprint,
+                            imap_uid=candidate.uid,
+                            status_before="processing",
+                            status_after=WorkflowStatus.CLEANUP_PENDING.value,
+                            category="other",
+                            confidence=0.0,
+                            action_taken=MOVE_CLEANUP_PENDING_ACTION,
+                            target_folder=mailbox.imap_uncertain_folder,
+                            duration_ms=int((perf_counter() - started) * 1000),
+                            error=f"parse_failed: {exc}; cleanup_failed: {cleanup_exc}",
+                            dry_run=False,
+                        )
+                        report.failed += 1
+                        report.cleanup_pending += 1
+                        continue
+
+                    state.mark_uncertain(
+                        record.id,
+                        category="other",
+                        confidence=0.0,
+                        target_folder=mailbox.imap_uncertain_folder,
+                        target_uid=target_uid,
+                        action_taken="move_route_uncertain_parse_failure",
+                        error_message=f"parse_failed: {exc}",
+                    )
+                    report.uncertain += 1
+                    audit.log(
+                        level="ERROR",
+                        mailbox_id=mailbox.mailbox_id,
+                        mailbox_user=mailbox.imap_user,
+                        source_folder=mailbox.imap_source_folder,
+                        message_id=candidate.message_id,
+                        fingerprint=fingerprint,
+                        imap_uid=candidate.uid,
+                        status_before="processing",
+                        status_after=WorkflowStatus.UNCERTAIN.value,
+                        category="other",
+                        confidence=0.0,
+                        action_taken="move_route_uncertain_parse_failure",
+                        target_folder=mailbox.imap_uncertain_folder,
+                        duration_ms=int((perf_counter() - started) * 1000),
+                        error=str(exc),
+                        dry_run=False,
+                    )
+                except Exception as move_exc:
+                    LOGGER.exception("Failed to quarantine parse-failed message for mailbox %s", mailbox.mailbox_id)
+                    state.mark_failed(record.id, error_message=f"parse_failed: {exc}; quarantine_failed: {move_exc}", error_type=move_exc.__class__.__name__)
+                    audit.log(
+                        level="ERROR",
+                        mailbox_id=mailbox.mailbox_id,
+                        mailbox_user=mailbox.imap_user,
+                        source_folder=mailbox.imap_source_folder,
+                        message_id=candidate.message_id,
+                        fingerprint=fingerprint,
+                        imap_uid=candidate.uid,
+                        status_before="processing",
+                        status_after=WorkflowStatus.FAILED.value,
+                        action_taken="failed_parse_quarantine",
+                        duration_ms=int((perf_counter() - started) * 1000),
+                        error=f"parse_failed: {exc}; quarantine_failed: {move_exc}",
+                        dry_run=False,
+                    )
+                    report.failed += 1
+                continue
             target_uid: str | None = None
             if settings.dry_run:
                 try:

@@ -51,12 +51,16 @@ def build_quality_payload(audit_path: Path) -> dict[str, Any]:
         }
         if status == "uncertain":
             recent_uncertain.append(compact)
-        if status in {"failed", "mailbox_failed", "cleanup_pending"}:
+        if status in {"failed", "mailbox_failed", "imap_auth_failed", "cleanup_pending"}:
             recent_failures.append(compact)
 
     total = len(records)
     uncertain = status_counts.get("uncertain", 0)
-    failed = status_counts.get("failed", 0) + status_counts.get("mailbox_failed", 0)
+    failed = (
+        status_counts.get("failed", 0)
+        + status_counts.get("mailbox_failed", 0)
+        + status_counts.get("imap_auth_failed", 0)
+    )
     cleanup_pending = status_counts.get("cleanup_pending", 0)
     llm_routed = route_source_counts.get("llm", 0)
     rule_routed = route_source_counts.get("rule", 0)

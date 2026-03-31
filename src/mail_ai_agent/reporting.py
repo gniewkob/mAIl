@@ -4,6 +4,7 @@ import csv
 import json
 import sqlite3
 from collections import Counter
+from contextlib import closing
 from pathlib import Path
 from typing import Any
 
@@ -78,7 +79,7 @@ def summarize_audit_records(records: list[dict[str, Any]]) -> dict[str, Any]:
     category_counts = Counter(record.get("category") for record in records if record.get("category"))
     mailbox_counts = Counter(record.get("mailbox_id") for record in records if record.get("mailbox_id"))
     errors = [record for record in records if record.get("error")]
-    cleanup_pending = sum(1 for record in records if record.get("action_taken") == MOVE_CLEANUP_PENDING_ACTION)
+    cleanup_pending = status_counts.get(WorkflowStatus.CLEANUP_PENDING.value, 0)
     return {
         "records": len(records),
         "actions": dict(sorted(action_counts.items())),
@@ -108,7 +109,7 @@ def export_audit_csv(records: list[dict[str, Any]], destination: Path) -> None:
 def export_state_csv(db_path: Path, destination: Path) -> int:
     destination.parent.mkdir(parents=True, exist_ok=True)
     tmp = destination.with_suffix(".tmp")
-    with sqlite3.connect(db_path) as conn:
+    with closing(sqlite3.connect(db_path)) as conn, conn:
         conn.row_factory = sqlite3.Row
         cursor = conn.execute("SELECT * FROM email_processing_state ORDER BY id")
         fieldnames: list[str] | None = None
@@ -130,7 +131,7 @@ def export_state_csv(db_path: Path, destination: Path) -> int:
 def summarize_state(db_path: Path) -> dict[str, Any]:
     if not db_path.exists():
         return {"records": 0, "statuses": {}, "mailboxes": {}, "cleanup_pending": 0}
-    with sqlite3.connect(db_path) as conn:
+    with closing(sqlite3.connect(db_path)) as conn, conn:
         conn.row_factory = sqlite3.Row
         rows = conn.execute(
             """

@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 import logging
 import time
+from functools import lru_cache
+from typing import Any
 
 import requests  # type: ignore[import-untyped]
 
@@ -74,13 +76,11 @@ class LLMGateway:
             try:
                 response = requests.post(
                     f"{self.settings.ollama_url}/api/generate",
-                    json={
-                        "model": self.settings.ollama_model,
-                        "prompt": prompt,
-                        "format": "json",
-                        "stream": False,
-                        "options": {"temperature": self.settings.ollama_temperature},
-                    },
+                    json=_build_generate_payload(
+                        model=self.settings.ollama_model,
+                        prompt=prompt,
+                        temperature=self.settings.ollama_temperature,
+                    ),
                     timeout=self.settings.ollama_timeout_seconds,
                 )
                 response.raise_for_status()
@@ -96,6 +96,23 @@ class LLMGateway:
                     time.sleep(min(0.5 * attempt, 5.0))
                 continue
         raise RuntimeError(f"LLM classification failed after retries: {last_error}") from last_error
+
+
+def _build_generate_payload(*, model: str, prompt: str, temperature: float) -> dict[str, Any]:
+    return {
+        "model": model,
+        "prompt": prompt,
+        "format": _classification_json_schema(),
+        "stream": False,
+        "options": {"temperature": temperature},
+    }
+
+
+@lru_cache(maxsize=1)
+def _classification_json_schema() -> dict[str, Any]:
+    schema = LLMClassification.model_json_schema()
+    schema.pop("title", None)
+    return schema
 
 
 def _extract_json(raw_output: str) -> str:
@@ -128,7 +145,52 @@ def _extract_json(raw_output: str) -> str:
 
 
 def _normalize_classification_payload(raw_output: str) -> dict[str, object]:
-    payload: dict[str, object] = json.loads(_extract_json(raw_output))
+    payload = json.loads(_extract_json(raw_output))
+    if not isinstance(payload, dict):
+        raise ValueError("LLM payload must be a JSON object")
+    if "classification" in payload and isinstance(payload["classification"], dict):
+        payload = payload["classification"]
+    elif "result" in payload and isinstance(payload["result"], dict):
+        payload = payload["result"]
+    if not isinstance(payload, dict):
+        raise ValueError("LLM payload must normalize to a JSON object")
+
+    allowed_keys = {
+        "category",
+        "priority",
+        "requires_reply",
+        "confidence",
+        "summary",
+        "entities",
+        "draft_reply",
+        "reasoning_short",
+    }
+    payload = dict(payload)
+    if "reasoning_short" not in payload:
+        alias_reasoning = payload.get("reasoning")
+        if isinstance(alias_reasoning, str) and alias_reasoning.strip():
+            payload["reasoning_short"] = alias_reasoning.strip()
+        elif isinstance(payload.get("summary"), str) and str(payload["summary"]).strip():
+            payload["reasoning_short"] = f"Klasyfikacja na podstawie treści wiadomości: {str(payload['summary']).strip()}"
+    if "draft_reply" not in payload:
+        payload["draft_reply"] = None
+    if "requires_reply" in payload and isinstance(payload["requires_reply"], str):
+        normalized = payload["requires_reply"].strip().lower()
+        if normalized in {"true", "yes", "1"}:
+            payload["requires_reply"] = True
+        elif normalized in {"false", "no", "0"}:
+            payload["requires_reply"] = False
+    if "confidence" in payload and isinstance(payload["confidence"], str):
+        try:
+            payload["confidence"] = float(payload["confidence"])
+        except ValueError:
+            pass
+    if "priority" in payload and isinstance(payload["priority"], str):
+        payload["priority"] = payload["priority"].strip().lower()
+    if "category" in payload and isinstance(payload["category"], str):
+        payload["category"] = payload["category"].strip().lower()
+
+    payload = {key: value for key, value in payload.items() if key in allowed_keys}
     entities = payload.get("entities")
     if entities is None or entities == []:
         payload["entities"] = {}

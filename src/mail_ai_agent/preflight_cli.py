@@ -16,13 +16,18 @@ def main() -> None:
     parser.add_argument("--mailbox-id", default=None, help="Optional mailbox id filter")
     args = parser.parse_args()
 
+    env_permission_error: str | None = None
     # Check .env file permissions if provided
     if args.env_file:
         env_path = Path(args.env_file)
         if env_path.exists():
             env_stat_mode = oct(stat.S_IMODE(env_path.stat().st_mode))[-3:]
             if env_stat_mode != "600":
-                print(f"[WARN] {env_path} permissions are {env_stat_mode} — should be 600 (run: chmod 600 {env_path})")
+                env_permission_error = (
+                    f"{env_path} permissions are {env_stat_mode} — should be 600 "
+                    f"(run: chmod 600 {env_path})"
+                )
+                print(f"[WARN] {env_permission_error}")
             else:
                 print(f"[OK]   {env_path} permissions: {env_stat_mode}")
 
@@ -56,8 +61,13 @@ def main() -> None:
             all_ok = False
         results.append(payload)
 
-    print(json.dumps({"ok": all_ok, "results": results}, ensure_ascii=False, indent=2))
-    if not all_ok:
+    payload: dict[str, object] = {"ok": all_ok, "results": results}
+    if env_permission_error is not None:
+        payload["env_file_error"] = env_permission_error
+        payload["ok"] = False
+
+    print(json.dumps(payload, ensure_ascii=False, indent=2))
+    if not payload["ok"]:
         raise SystemExit(1)
 
 

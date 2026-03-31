@@ -12,6 +12,7 @@ STDOUT_LOG="${STDOUT_LOG:-logs/launchd-multi-prod-stdout.log}"
 STDERR_LOG="${STDERR_LOG:-logs/launchd-multi-prod-stderr.log}"
 
 "$PYTHON_BIN" -m mail_ai_agent.healthcheck_cli \
+  --env-file "$ENV_FILE" \
   --state-db "$STATE_DB" \
   --audit-log "$AUDIT_LOG" \
   --stdout-log "$STDOUT_LOG" \

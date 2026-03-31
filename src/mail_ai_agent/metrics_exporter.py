@@ -3,17 +3,21 @@ from __future__ import annotations
 import argparse
 import json
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import logging
 from pathlib import Path
 from typing import Callable, cast
 
 from .healthcheck_cli import build_health_payload
 from .quality_report import build_quality_payload
 
+LOGGER = logging.getLogger(__name__)
+
 
 def build_metrics_payload(
     *,
     state_db: Path,
     audit_log: Path,
+    env_file: Path | None = None,
     stdout_log: Path | None,
     stderr_log: Path | None,
     recent_audit_limit: int,
@@ -23,6 +27,7 @@ def build_metrics_payload(
     health = build_health_payload(
         state_db=state_db,
         audit_log=audit_log,
+        env_file=env_file,
         stdout_log=stdout_log,
         stderr_log=stderr_log,
         recent_audit_limit=recent_audit_limit,
@@ -30,11 +35,15 @@ def build_metrics_payload(
         max_uncertain=max_uncertain,
     )
     quality = build_quality_payload(audit_log)
+    operational_health_status = _operational_health_status(health)
 
     lines = [
         "# HELP mailai_health_ok 1 when the mail AI system is healthy.",
         "# TYPE mailai_health_ok gauge",
         f"mailai_health_ok {1 if health['ok'] else 0}",
+        "# HELP operational_health_status Cross-service operational health status (0=normal, 1=watch, 2=elevated).",
+        "# TYPE operational_health_status gauge",
+        f"operational_health_status {operational_health_status}",
     ]
 
     for key, value in cast(dict[str, object], health["state"]).items():
@@ -75,6 +84,24 @@ def build_metrics_payload(
     return "\n".join(lines) + "\n"
 
 
+def _operational_health_status(health: dict[str, object]) -> int:
+    state = cast(dict[str, object], health.get("state", {}))
+    issues = [str(issue) for issue in cast(list[object], health.get("issues", []))]
+
+    elevated_prefixes = ("state_failed=", "state_cleanup_pending=", "config_error=")
+    elevated_markers = (
+        "recent mailbox_failed present in audit log",
+        "recent imap_auth_failed present in audit log",
+        "recent cleanup_uidvalidity_mismatch present in audit log",
+        "recent folder-level expunge refusal present in audit log",
+    )
+    if any(issue.startswith(elevated_prefixes) for issue in issues) or any(marker in issues for marker in elevated_markers):
+        return 2
+    if int(cast(int, state.get("uncertain", 0))) > 0 or issues:
+        return 1
+    return 0
+
+
 def _labelled_metrics(metric_name: str, help_text: str, mapping: dict[str, int], label_name: str) -> list[str]:
     lines = [f"# HELP {metric_name} {help_text}", f"# TYPE {metric_name} gauge"]
     for key, value in sorted(mapping.items()):
@@ -95,7 +122,18 @@ def serve_metrics(
                 self.send_response(404)
                 self.end_headers()
                 return
-            body = payload_builder().encode("utf-8")
+            try:
+                body = payload_builder().encode("utf-8")
+            except Exception:
+                LOGGER.exception("metrics payload generation failed")
+                body = b"metrics payload generation failed\n"
+                self.send_response(500)
+                self.send_header("Content-Type", "text/plain; charset=utf-8")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+                return
+
             self.send_response(200)
             self.send_header("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
             self.send_header("Content-Length", str(len(body)))
@@ -118,6 +156,7 @@ def main() -> None:
     parser.add_argument("--port", type=int, default=9177, help="Port to bind")
     parser.add_argument("--audit-log", default="logs/audit.jsonl", help="Path to audit JSONL")
     parser.add_argument("--state-db", default="data/state.sqlite", help="Path to SQLite state DB")
+    parser.add_argument("--env-file", default=None, help="Optional env file path")
     parser.add_argument("--stdout-log", default=None, help="Optional stdout log path")
     parser.add_argument("--stderr-log", default=None, help="Optional stderr log path")
     parser.add_argument("--recent-audit-limit", type=int, default=50, help="How many recent audit records to inspect")
@@ -129,6 +168,7 @@ def main() -> None:
     builder: Callable[[], str] = lambda: build_metrics_payload(
         state_db=Path(args.state_db),
         audit_log=Path(args.audit_log),
+        env_file=Path(args.env_file) if args.env_file else None,
         stdout_log=Path(args.stdout_log) if args.stdout_log else None,
         stderr_log=Path(args.stderr_log) if args.stderr_log else None,
         recent_audit_limit=args.recent_audit_limit,

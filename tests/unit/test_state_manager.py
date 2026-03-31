@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from unittest.mock import Mock
 
 from mail_ai_agent.schemas import WorkflowStatus
 from mail_ai_agent.state_manager import StateManager
@@ -396,3 +397,63 @@ def test_worker_lock_same_worker_can_refresh(tmp_path):
     assert r2.acquired is True
 
 
+def test_managed_connection_closes_after_release_worker_lock(tmp_path):
+    manager = StateManager(tmp_path / "state.sqlite")
+
+    class FakeConnection:
+        def __init__(self) -> None:
+            self.execute = Mock()
+            self.closed = False
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def close(self) -> None:
+            self.closed = True
+
+    fake_conn = FakeConnection()
+    manager._connect = lambda: fake_conn  # type: ignore[method-assign]
+
+    manager.release_worker_lock(worker_id="worker-1")
+
+    fake_conn.execute.assert_called_once_with(
+        "DELETE FROM worker_runtime_lock WHERE lock_name = ? AND lock_owner = ?",
+        ("main", "worker-1"),
+    )
+    assert fake_conn.closed is True
+
+
+def test_list_by_status_and_delete_record(tmp_path: Path) -> None:
+    manager = StateManager(tmp_path / "state.sqlite")
+    acquired = manager.acquire_lease(
+        mailbox_id="inbox_a",
+        message_id="msg-1",
+        fingerprint="fp-1",
+        imap_uid="10",
+        sender="client@example.com",
+        subject="Pytanie",
+        source_folder="INBOX.AI-Review",
+        internaldate=None,
+        worker_id="worker-1",
+        lease_seconds=60,
+        max_retries=3,
+    )
+    assert acquired.record is not None
+    manager.mark_uncertain(
+        acquired.record.id,
+        category="other",
+        confidence=0.2,
+        target_folder="INBOX.AI-Uncertain",
+        target_uid="55",
+        error_message="llm failed",
+    )
+
+    uncertain = manager.list_by_status(status=WorkflowStatus.UNCERTAIN)
+    assert [record.id for record in uncertain] == [acquired.record.id]
+
+    manager.delete_record(acquired.record.id)
+
+    assert manager.get_by_id(acquired.record.id) is None

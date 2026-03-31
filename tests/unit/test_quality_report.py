@@ -67,3 +67,39 @@ def test_build_quality_payload_summarizes_route_sources_and_recent_issues(tmp_pa
     assert payload["by_route_source"]["llm_failure"] == 1
     assert payload["recent_uncertain"][0]["subject"] == "sha256:subjecthash"
     assert payload["recent_failures"][0]["action_taken"] == "mailbox_failed"
+
+
+def test_build_quality_payload_counts_imap_auth_failure_as_failure(tmp_path: Path) -> None:
+    audit_path = tmp_path / "audit.jsonl"
+    audit_path.write_text(
+        "\n".join(
+            [
+                json.dumps(
+                    {
+                        "timestamp": "2026-03-29T12:15:00+00:00",
+                        "mailbox_id": "kontakt",
+                        "action_taken": "imap_auth_failed",
+                        "status_after": "imap_auth_failed",
+                        "error": "AUTHENTICATIONFAILED",
+                    }
+                ),
+                json.dumps(
+                    {
+                        "timestamp": "2026-03-29T12:20:00+00:00",
+                        "mailbox_id": "kontakt",
+                        "action_taken": "move_route_from_llm",
+                        "status_after": "processed",
+                        "category": "question",
+                        "target_folder": "INBOX.Questions",
+                    }
+                ),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    payload = build_quality_payload(audit_path)
+
+    assert payload["summary"]["failed"] == 1
+    assert payload["recent_failures"][0]["action_taken"] == "imap_auth_failed"

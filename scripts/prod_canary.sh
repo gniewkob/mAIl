@@ -17,6 +17,7 @@ echo "== Preflight =="
 echo
 echo "== Healthcheck =="
 "$PYTHON_BIN" -m mail_ai_agent.healthcheck_cli \
+  --env-file "$ENV_FILE" \
   --state-db "$STATE_DB" \
   --audit-log "$AUDIT_LOG" \
   --stdout-log "$STDOUT_LOG" \

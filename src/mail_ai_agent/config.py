@@ -187,7 +187,9 @@ class Settings(BaseSettings):
     def _normalize_mailbox(self, raw_mailbox: dict[str, Any]) -> MailboxConfig:
         if "imap_user" not in raw_mailbox:
             raise ValueError("Each mailbox entry must include imap_user.")
-        if "imap_pass" not in raw_mailbox and "imap_pass_ref" not in raw_mailbox:
+        plain_secret = raw_mailbox.get("imap_pass")
+        secret_ref = raw_mailbox.get("imap_pass_ref")
+        if plain_secret in (None, "") and secret_ref in (None, ""):
             raise ValueError("Each mailbox entry must include imap_pass or imap_pass_ref.")
         mailbox_user = str(raw_mailbox["imap_user"])
 
@@ -208,7 +210,7 @@ class Settings(BaseSettings):
             "imap_retry_backoff_seconds": _get("imap_retry_backoff_seconds", self.imap_retry_backoff_seconds),
             "imap_search_criterion": _get("imap_search_criterion", self.imap_search_criterion),
             "imap_fetch_limit": _get("imap_fetch_limit", self.imap_fetch_limit),
-            "imap_allow_folder_expunge": raw_mailbox.get("imap_allow_folder_expunge", self.imap_allow_folder_expunge),
+            "imap_allow_folder_expunge": _get("imap_allow_folder_expunge", self.imap_allow_folder_expunge),
             "imap_source_folder": _get("imap_source_folder", self.imap_source_folder),
             "imap_uncertain_folder": _get("imap_uncertain_folder", self.imap_uncertain_folder),
             "imap_appointments_folder": _get("imap_appointments_folder", self.imap_appointments_folder),
@@ -226,9 +228,15 @@ class Settings(BaseSettings):
 
 def _resolve_mailbox_secret(raw_mailbox: dict[str, Any], mailbox_user: str) -> str:
     if "imap_pass" in raw_mailbox:
-        return str(raw_mailbox["imap_pass"])
+        secret = raw_mailbox["imap_pass"]
+        if secret in (None, ""):
+            raise ValueError(f"Mailbox '{mailbox_user}' has empty imap_pass.")
+        return str(secret)
 
-    ref = str(raw_mailbox["imap_pass_ref"]).strip()
+    ref_value = raw_mailbox["imap_pass_ref"]
+    if ref_value in (None, ""):
+        raise ValueError(f"Mailbox '{mailbox_user}' has empty imap_pass_ref.")
+    ref = str(ref_value).strip()
     if not ref:
         raise ValueError(f"Mailbox '{mailbox_user}' has empty imap_pass_ref.")
     if ref.startswith("env:"):

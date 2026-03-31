@@ -70,11 +70,11 @@ def summarize_review_rows(rows: list[dict[str, Any]]) -> dict[str, int]:
     for row in rows:
         if row["status_after"] == "uncertain":
             summary["uncertain"] += 1
-        if row["status_after"] in {"failed", "mailbox_failed"}:
+        if row["status_after"] in {"failed", "mailbox_failed", "imap_auth_failed"}:
             summary["failed"] += 1
         if row["status_after"] == "simulated":
             summary["simulated"] += 1
-        if row["action_taken"] == MOVE_CLEANUP_PENDING_ACTION:
+        if row["status_after"] == "cleanup_pending":
             summary["cleanup_pending"] += 1
         if row["draft_path"]:
             summary["drafts"] += 1

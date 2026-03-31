@@ -3,7 +3,7 @@
 <plist version="1.0">
 <dict>
     <key>Label</key>
-    <string>com.salonbw.mailai</string>
+    <string>com.mailai.multi</string>
 
     <key>ProgramArguments</key>
     <array>
@@ -11,7 +11,7 @@
         <string>-m</string>
         <string>mail_ai_agent.cli</string>
         <string>--env-file</string>
-        <string>/Users/REPLACE_ME/Repos/priv/mAIl/.env.test</string>
+        <string>/Users/REPLACE_ME/Repos/priv/mAIl/.env.multi.prod</string>
         <string>--json</string>
     </array>
 
@@ -31,10 +31,10 @@
     <integer>300</integer>
 
     <key>StandardOutPath</key>
-    <string>/Users/REPLACE_ME/Repos/priv/mAIl/logs/launchd-stdout.log</string>
+    <string>/Users/REPLACE_ME/Repos/priv/mAIl/logs/launchd-multi-stdout.log</string>
 
     <key>StandardErrorPath</key>
-    <string>/Users/REPLACE_ME/Repos/priv/mAIl/logs/launchd-stderr.log</string>
+    <string>/Users/REPLACE_ME/Repos/priv/mAIl/logs/launchd-multi-stderr.log</string>
 
     <key>KeepAlive</key>
     <false/>

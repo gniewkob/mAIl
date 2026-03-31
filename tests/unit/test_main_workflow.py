@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from email.message import EmailMessage
 from pathlib import Path
@@ -652,6 +653,35 @@ class FakeAuthFailingIMAPClient:
         return None
 
 
+class FakeTwoCandidateIMAPClient(FakeIMAPClient):
+    def fetch_candidates(self, folder: str) -> list[CandidateMessage]:
+        first = EmailMessage()
+        first["From"] = "bad@example.com"
+        first["Subject"] = "Uszkodzona wiadomosc"
+        first["Message-ID"] = "<bad-1@example.com>"
+        first.set_content("to bedzie blad parsera")
+
+        second = EmailMessage()
+        second["From"] = "client@example.com"
+        second["Subject"] = "Pytanie o cenę"
+        second["Message-ID"] = "<ok-1@example.com>"
+        second.set_content("Jaka jest cena usługi manicure?")
+        return [
+            CandidateMessage(uid="41", uidvalidity="999", internaldate=None, raw_bytes=first.as_bytes()),
+            CandidateMessage(uid="42", uidvalidity="999", internaldate=None, raw_bytes=second.as_bytes()),
+        ]
+
+
+class FakeBrokenParseIMAPClient(FakeIMAPClient):
+    def fetch_candidates(self, folder: str) -> list[CandidateMessage]:
+        message = EmailMessage()
+        message["From"] = "bad@example.com"
+        message["Subject"] = "Uszkodzona wiadomosc"
+        message["Message-ID"] = "<bad-1@example.com>"
+        message.set_content("to bedzie blad parsera")
+        return [CandidateMessage(uid="41", uidvalidity="999", internaldate=None, raw_bytes=message.as_bytes())]
+
+
 def test_process_inbox_auth_failure_sets_flag_and_logs_critical(monkeypatch, tmp_path: Path) -> None:
     from mail_ai_agent.main import process_inbox
 
@@ -670,3 +700,82 @@ def test_process_inbox_auth_failure_sets_flag_and_logs_critical(monkeypatch, tmp
     payload = json.loads(auth_lines[0])
     assert payload["action_taken"] == "imap_auth_failed"
     assert payload["level"] == "CRITICAL"
+
+
+def test_process_inbox_continues_after_parse_failure(monkeypatch, tmp_path: Path) -> None:
+    from mail_ai_agent.main import process_inbox
+    from mail_ai_agent.schemas import ParsedEmail
+
+    def fake_parse_email(raw_bytes: bytes, settings: Settings) -> ParsedEmail:
+        text = raw_bytes.decode("utf-8", errors="ignore")
+        if "<bad-1@example.com>" in text:
+            raise ValueError("broken MIME")
+        return ParsedEmail(
+            message_id="<ok-1@example.com>",
+            sender="client@example.com",
+            subject="Pytanie o cenę",
+            normalized_body="Jaka jest cena usługi manicure?",
+            plain_text_body="Jaka jest cena usługi manicure?",
+        )
+
+    FakeTwoCandidateIMAPClient.copied = []
+    FakeTwoCandidateIMAPClient.flagged = []
+    FakeTwoCandidateIMAPClient.deleted = []
+    FakeTwoCandidateIMAPClient.validated = []
+    monkeypatch.setattr("mail_ai_agent.main.IMAPClient", FakeTwoCandidateIMAPClient)
+    monkeypatch.setattr("mail_ai_agent.main.LLMGateway", FakeLLMGateway)
+    monkeypatch.setattr("mail_ai_agent.main.parse_email", fake_parse_email)
+    settings = make_settings(tmp_path)
+
+    report = process_inbox(settings)
+
+    assert report.candidates_seen == 2
+    assert report.failed == 1
+    assert report.simulated == 1
+    audit_lines = [json.loads(line) for line in (tmp_path / "audit.jsonl").read_text(encoding="utf-8").splitlines()]
+    actions = [line["action_taken"] for line in audit_lines]
+    assert actions == ["failed_parse", "simulate_route_from_llm"]
+
+
+def test_process_inbox_routes_parse_failure_to_uncertain_once_in_prod(monkeypatch, tmp_path: Path) -> None:
+    from mail_ai_agent.main import process_inbox
+
+    def fake_parse_email(raw_bytes: bytes, settings: Settings) -> ParsedEmail:
+        raise ValueError("broken MIME")
+
+    FakeBrokenParseIMAPClient.copied = []
+    FakeBrokenParseIMAPClient.deleted = []
+    FakeBrokenParseIMAPClient.validated = []
+    monkeypatch.setattr("mail_ai_agent.main.IMAPClient", FakeBrokenParseIMAPClient)
+    monkeypatch.setattr("mail_ai_agent.main.LLMGateway", FakeLLMGateway)
+    monkeypatch.setattr("mail_ai_agent.main.parse_email", fake_parse_email)
+    settings = make_settings(tmp_path).model_copy(update={"dry_run": False})
+
+    first = process_inbox(settings)
+    first_copied = list(FakeBrokenParseIMAPClient.copied)
+    first_deleted = list(FakeBrokenParseIMAPClient.deleted)
+    second = process_inbox(settings)
+
+    assert first.uncertain == 1
+    assert first.failed == 0
+    assert second.uncertain == 0
+    assert second.skipped == 1
+    assert first_copied == [("INBOX.AI-Review", "41", "INBOX.AI-Uncertain")]
+    assert first_deleted == [("INBOX.AI-Review", "41")]
+
+    message = EmailMessage()
+    message["From"] = "bad@example.com"
+    message["Subject"] = "Uszkodzona wiadomosc"
+    message["Message-ID"] = "<bad-1@example.com>"
+    message.set_content("to bedzie blad parsera")
+    fingerprint = hashlib.sha256(message.as_bytes()).hexdigest()
+
+    manager = StateManager(tmp_path / "state.sqlite")
+    records = manager.get_by_fingerprint(settings.default_mailbox_id(), fingerprint)
+    assert records is not None
+    assert records.status.value == "uncertain"
+    assert records.target_folder == "INBOX.AI-Uncertain"
+
+    audit_lines = [json.loads(line) for line in (tmp_path / "audit.jsonl").read_text(encoding="utf-8").splitlines()]
+    assert audit_lines[0]["action_taken"] == "move_route_uncertain_parse_failure"
+    assert audit_lines[1]["action_taken"] == "skip_already_done"

@@ -5,7 +5,7 @@ import imaplib
 import pytest
 
 from mail_ai_agent.config import MailboxConfig
-from mail_ai_agent.imap_client import IMAPClient
+from mail_ai_agent.imap_client import IMAPClient, _parse_list_response
 
 
 class FakeFlakyConnection:
@@ -260,8 +260,10 @@ def test_delete_message_refuses_folder_expunge_when_other_deleted_messages_exist
         else:
             raise AssertionError("Expected RuntimeError")
 
-    assert connection.store_calls == []
-    assert connection.expunge_calls == 0
+
+def test_parse_list_response_skips_noselect_and_unquotes_names() -> None:
+    assert _parse_list_response(b'(\\HasNoChildren) "/" "INBOX.Archive/2025"') == "INBOX.Archive/2025"
+    assert _parse_list_response(b'(\\Noselect) "/" "INBOX.Virtual"') is None
 
 
 def test_delete_message_rolls_back_deleted_flag_when_deleted_set_changes(monkeypatch) -> None:

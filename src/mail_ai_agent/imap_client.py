@@ -15,6 +15,7 @@ T = TypeVar("T")
 
 _UID_RE = _re.compile(r"\bUID\s+(\d+)\b", _re.IGNORECASE)
 _INTERNALDATE_RE = _re.compile(r'INTERNALDATE\s+"([^"]+)"', _re.IGNORECASE)
+_LIST_RE = _re.compile(r"^\((?P<flags>[^)]*)\)\s+(?P<delimiter>NIL|\"[^\"]*\")\s+(?P<name>.+)$")
 
 _AUTH_FAILURE_KEYWORDS = (
     "AUTHENTICATIONFAILED",
@@ -119,6 +120,21 @@ class IMAPClient(AbstractContextManager["IMAPClient"]):
                 raise RuntimeError(f"Unable to select folder {folder} in {mode} mode")
 
         self._run_with_retry("ensure_folder_access", _ensure)
+
+    def list_folders(self) -> list[str]:
+        def _list() -> list[str]:
+            assert self.connection is not None
+            status, data = self.connection.list()
+            if status != "OK":
+                raise RuntimeError("Unable to list IMAP folders")
+            folders: list[str] = []
+            for item in data or []:
+                folder = _parse_list_response(item)
+                if folder and folder not in folders:
+                    folders.append(folder)
+            return folders
+
+        return self._run_with_retry("list_folders", _list)
 
     def supports_uidplus(self) -> bool:
         assert self.connection is not None
@@ -332,3 +348,17 @@ def _parse_batch_fetch_response(
             internaldate=internaldate,
             raw_bytes=raw_bytes,
         )
+
+
+def _parse_list_response(item: object) -> str | None:
+    raw = item.decode("utf-8", errors="ignore") if isinstance(item, bytes) else str(item)
+    match = _LIST_RE.match(raw.strip())
+    if not match:
+        return None
+    flags = {flag.upper() for flag in match.group("flags").split()}
+    if "\\NOSELECT" in flags:
+        return None
+    name = match.group("name").strip()
+    if name.startswith('"') and name.endswith('"'):
+        return name[1:-1].replace(r"\\", "\\").replace(r"\"", '"')
+    return name

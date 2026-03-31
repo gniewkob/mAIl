@@ -370,3 +370,51 @@ def test_scrub_draft_pii_redacts_sender_and_subject(tmp_path: Path) -> None:
     assert payload["sender_sha256"]
     assert payload["subject_sha256"]
     assert payload["draft_reply"] == "Treść draftu"
+
+
+def test_maintain_sqlite_closes_connection(monkeypatch) -> None:
+    import sqlite3
+
+    from mail_ai_agent import maintenance
+
+    state_db = Path("test-maintenance-close.sqlite")
+    try:
+        with sqlite3.connect(state_db) as conn:
+            conn.execute("CREATE TABLE sample (id INTEGER PRIMARY KEY)")
+
+        class TrackingConnection:
+            def __init__(self, inner):
+                self._inner = inner
+                self.closed = False
+
+            def __getattr__(self, name):
+                return getattr(self._inner, name)
+
+            def __enter__(self):
+                self._inner.__enter__()
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return self._inner.__exit__(exc_type, exc, tb)
+
+            def close(self) -> None:
+                self.closed = True
+                self._inner.close()
+
+        holder: dict[str, TrackingConnection] = {}
+        real_connect = maintenance.sqlite3.connect
+
+        def tracked_connect(path):
+            wrapped = TrackingConnection(real_connect(path))
+            holder["conn"] = wrapped
+            return wrapped
+
+        monkeypatch.setattr(maintenance.sqlite3, "connect", tracked_connect)
+
+        result = maintenance.maintain_sqlite(state_db)
+    finally:
+        if state_db.exists():
+            state_db.unlink()
+
+    assert result["status"] == "ok"
+    assert holder["conn"].closed is True

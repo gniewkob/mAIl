@@ -22,7 +22,9 @@ dev = [
 ]
 
 [project.scripts]
+mail-ai-admin-mailbox = "mail_ai_agent.admin_mailbox_cli:main"
 mail-ai-admin-notify = "mail_ai_agent.admin_notify_cli:main"
+mail-ai-historical-backfill = "mail_ai_agent.historical_backfill_cli:main"
 
 [tool.setuptools]
 package-dir = {"" = "src"}

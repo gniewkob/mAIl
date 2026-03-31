@@ -71,3 +71,26 @@ def test_preflight_cli_exits_nonzero_when_mailbox_fails(
     broken = next(item for item in payload["results"] if item["mailbox_id"] == "broken")
     assert broken["ok"] is False
     assert "missing folder" in broken["error"]
+
+
+def test_preflight_cli_exits_nonzero_on_bad_env_permissions(
+    monkeypatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    env_file = tmp_path / ".env.bad"
+    env_file.write_text("IMAP_HOST=imap.example.com\n", encoding="utf-8")
+    env_file.chmod(0o644)
+
+    monkeypatch.setattr("mail_ai_agent.preflight_cli.IMAPClient", FakePreflightIMAPClient)
+    monkeypatch.setattr(sys, "argv", ["preflight_cli", "--env-file", str(env_file)])
+    monkeypatch.setenv("IMAP_HOST", "imap.example.com")
+    monkeypatch.setenv("IMAP_USER", "user@example.com")
+    monkeypatch.setenv("IMAP_PASS", "secret")
+    monkeypatch.setenv("DRY_RUN", "true")
+
+    with pytest.raises(SystemExit, match="1"):
+        main()
+
+    output = capsys.readouterr().out
+    payload = json.loads(output[output.find("{"):])
+    assert payload["ok"] is False
+    assert "env_file_error" in payload

@@ -96,6 +96,35 @@ def test_settings_load_mailboxes_from_env_secret_refs(tmp_path: Path, monkeypatc
     assert mailboxes[0].imap_pass.get_secret_value() == "env-secret"
 
 
+def test_settings_manifest_null_imap_allow_folder_expunge_inherits_global_default(tmp_path: Path) -> None:
+    manifest = tmp_path / "mailboxes.json"
+    manifest.write_text(
+        json.dumps(
+            {
+                "mailboxes": [
+                    {
+                        "mailbox_id": "kontakt",
+                        "imap_user": "kontakt@example.com",
+                        "imap_pass": "secret-a",
+                        "imap_allow_folder_expunge": None,
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    settings = Settings(
+        IMAP_HOST="imap.example.com",
+        MAILBOXES_CONFIG_PATH=manifest,
+        IMAP_ALLOW_FOLDER_EXPUNGE=True,
+    )
+
+    mailboxes = settings.load_mailboxes()
+
+    assert mailboxes[0].imap_allow_folder_expunge is True
+
+
 def test_settings_rejects_missing_env_secret_ref(tmp_path: Path) -> None:
     manifest = tmp_path / "mailboxes.json"
     manifest.write_text(
@@ -119,6 +148,32 @@ def test_settings_rejects_missing_env_secret_ref(tmp_path: Path) -> None:
     )
 
     with pytest.raises(ValueError, match="MISSING_SECRET"):
+        settings.load_mailboxes()
+
+
+def test_settings_rejects_null_plaintext_secret(tmp_path: Path) -> None:
+    manifest = tmp_path / "mailboxes.json"
+    manifest.write_text(
+        json.dumps(
+            {
+                "mailboxes": [
+                    {
+                        "mailbox_id": "kontakt",
+                        "imap_user": "kontakt@example.com",
+                        "imap_pass": None,
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    settings = Settings(
+        IMAP_HOST="imap.example.com",
+        MAILBOXES_CONFIG_PATH=manifest,
+    )
+
+    with pytest.raises(ValueError, match="imap_pass or imap_pass_ref|empty imap_pass"):
         settings.load_mailboxes()
 
 

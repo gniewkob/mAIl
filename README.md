@@ -1,46 +1,149 @@
-# AI Mail Triage MVP
+# mAIl
 
-Local email triage worker built around:
+Local-first AI email triage for IMAP inboxes.
 
-- IMAP
-- Python
-- Ollama for local classification
-- SQLite for workflow state and leases
-- JSONL audit logging
+`mAIl` classifies incoming mail, routes it into operational folders, keeps an auditable workflow state in SQLite, and uses a local LLM only when deterministic rules are not enough. It is designed for private deployments where data residency, operational safety, and predictable routing matter more than raw demo speed.
 
-## What is included in the public repo
+## Why this project exists
 
-This repository is prepared for public sharing:
+Most inbox automation tools optimize for happy-path classification and ignore the hard parts:
+
+- mailbox state drift
+- IMAP safety during `copy -> delete`
+- replay / deduplication
+- partial failures after successful copy
+- local-only processing and privacy
+- auditability for every routing decision
+
+`mAIl` was built to handle those constraints explicitly.
+
+## What it does
+
+- reads mail from worker-owned IMAP source folders such as `INBOX.AI-Review`
+- applies deterministic rules first for billing, complaints, system mail, spam/offers, and known operational patterns
+- sends only ambiguous messages to a local Ollama model
+- converts rule or LLM output into deterministic workflow actions
+- routes mail to target folders like `INBOX.Billing`, `INBOX.Other`, `INBOX.Appointments`, or `INBOX.System`
+- persists mailbox-safe workflow state and leases in SQLite
+- writes JSONL audit logs for review, reporting, and Grafana / Prometheus metrics
+
+## Architecture
+
+```mermaid
+flowchart LR
+    A[IMAP Mailboxes] --> B[Worker Source Folder\nINBOX.AI-Review]
+    B --> C[Python Worker]
+    C --> D[Email Parser\nnormalize body, attachments, fingerprint]
+    D --> E[Rule Engine]
+    E -->|deterministic match| F[Decision Engine]
+    E -->|needs semantic classification| G[LLM Gateway\nOllama]
+    G --> F
+    F --> H[IMAP Router\ncopy -> delete_message]
+    F --> I[Draft Store]
+    C --> J[SQLite State\nleases, idempotency, cleanup state]
+    C --> K[JSONL Audit Log]
+    J --> L[Health / Status / Reports]
+    K --> L
+    L --> M[Prometheus Metrics]
+    M --> N[Grafana]
+```
+
+## Request lifecycle
+
+1. `launchd` starts the worker on a schedule.
+2. The worker loads global settings and the mailbox manifest.
+3. A global runtime lock is acquired.
+4. Messages are fetched from the configured source folder.
+5. Each message is parsed, normalized, and fingerprinted.
+6. SQLite leases ensure idempotent processing and safe retries.
+7. Deterministic rules handle obvious cases first.
+8. Only unresolved messages go to Ollama for semantic classification.
+9. The decision engine maps semantics to folders, flags, or drafts.
+10. The message is routed through IMAP and every state transition is audited.
+
+## Core design choices
+
+### 1. Local-first AI
+
+The LLM runs through Ollama on the host machine. This keeps message content local and removes dependency on external inference APIs for day-to-day classification.
+
+### 2. Deterministic before probabilistic
+
+The system does not ask the model to solve everything. It protects common operational classes with deterministic rules first, which improves speed, cost, and predictability.
+
+### 3. Defensive IMAP
+
+`mAIl` treats IMAP as a failure-prone integration point. It validates folder access, prefers `UID EXPUNGE` when possible, tracks `UIDVALIDITY`, and keeps explicit `cleanup_pending` state when copy succeeded but source deletion did not.
+
+### 4. Stateful workflow, not stateless polling
+
+SQLite is used for:
+
+- leases
+- idempotency
+- retry control
+- cleanup recovery
+- mailbox-scoped uniqueness
+
+This avoids duplicate work and allows safe replay after partial failures.
+
+### 5. Auditable operations
+
+Each routing action is written to JSONL audit logs, which then feed:
+
+- health checks
+- quality reports
+- manual review reports
+- Prometheus metrics
+
+## Main components
+
+| Component | Responsibility |
+| --- | --- |
+| `config.py` | Settings, mailbox manifest loading, secret resolution |
+| `email_parser.py` | RFC822 parsing, body normalization, attachment metadata, fingerprint inputs |
+| `rule_engine.py` | Fast deterministic routing for known categories |
+| `llm_gateway.py` | Local semantic classification through Ollama with schema validation |
+| `decision_engine.py` | Final workflow action and folder mapping |
+| `imap_client.py` | Safe IMAP fetch/copy/delete/retry behavior |
+| `state_manager.py` | SQLite workflow state, leases, cleanup tracking |
+| `audit_logger.py` | Append-only JSONL audit trail |
+| `metrics_exporter.py` / `metrics_bridge.py` | Prometheus-compatible runtime and quality metrics |
+| `historical_backfill_cli.py` | Safe backlog staging through the standard worker flow |
+| `admin_mailbox_cli.py` | Narrow operational remediation for exact IMAP/admin actions |
+
+## Security and privacy
+
+The public repository is prepared for safe sharing:
 
 - real `.env` files are ignored
 - real mailbox manifests are ignored
 - runtime data, logs, drafts, and generated output are ignored
-- only example configuration files are kept in git
+- only example configuration is kept in git
 
-## Setup
+Runtime security model:
 
-1. Create a virtual environment:
+- prefer `imap_pass_ref` over plaintext `imap_pass`
+- supported secret references:
+  - `env:VAR_NAME`
+  - `keychain:service/account`
+  - `keychain:service:account`
+- audit and state can redact direct PII fields
+- runtime files are written with owner-only permissions where possible
+
+## Quick start
+
+### 1. Create the environment
 
 ```bash
 python3 -m venv .venv
-```
-
-2. Install dependencies:
-
-```bash
 .venv/bin/pip install -r requirements.txt
 .venv/bin/pip install -e .
 ```
 
-3. Create `.env` from `.env.example` and fill in real values.
-4. For safer IMAP testing, create `.env.test` from `.env.test.example`.
-5. For multi-mailbox mode, copy `config/mailboxes.example.json` to a local manifest such as `config/mailboxes.local.json` and point `MAILBOXES_CONFIG_PATH` at that file.
-   Prefer `imap_pass_ref` over plaintext `imap_pass`. Supported refs:
-   `env:VAR_NAME`, `keychain:service/account`, `keychain:service:account`.
+### 2. Configure a local mailbox
 
-## Single-mailbox mode
-
-Required settings:
+Create `.env` from `.env.example` and fill in:
 
 - `IMAP_HOST`
 - `IMAP_USER`
@@ -52,17 +155,9 @@ Run:
 .venv/bin/python -m mail_ai_agent.cli --json
 ```
 
-Use a custom env file:
+### 3. Configure multi-mailbox mode
 
-```bash
-.venv/bin/python -m mail_ai_agent.cli --env-file .env.test --json
-```
-
-## Multi-mailbox mode
-
-Set `MAILBOXES_CONFIG_PATH` in your env file to your local mailbox manifest.
-
-Start from the example:
+Start from:
 
 - [config/mailboxes.example.json](config/mailboxes.example.json)
 
@@ -73,121 +168,58 @@ cp .env.multi.test.example .env.multi.test
 cp config/mailboxes.example.json config/mailboxes.local.json
 ```
 
-If you are starting from a manifest with plaintext `imap_pass`, migrate it first:
-
-```bash
-.venv/bin/python -m mail_ai_agent.manifest_secrets_cli \
-  --input config/mailboxes.local.json \
-  --output config/mailboxes.local.refs.json \
-  --mode env \
-  --sidecar-output output/mailboxes.local.secrets.sh
-```
-
-Then update `.env.multi.test` so `MAILBOXES_CONFIG_PATH=config/mailboxes.local.json`, configure secret refs for each mailbox, and run:
+Then point `MAILBOXES_CONFIG_PATH` to that manifest and run:
 
 ```bash
 .venv/bin/python -m mail_ai_agent.cli --env-file .env.multi.test --json
 ```
 
-Preflight the mailbox topology before enabling the worker:
+Preflight topology before enabling the worker:
 
 ```bash
 .venv/bin/python -m mail_ai_agent.preflight_cli --env-file .env.multi.test
 ```
 
-Production multi-mailbox mode uses the same manifest structure, but with mailbox-specific production folders such as `INBOX.AI-Review`, `INBOX.Other`, and `INBOX.Billing`.
+## Operational model
 
-## Runtime behavior
+Production assumes:
 
-- processed mail is moved with IMAP `copy -> delete_message`
-- deterministic complaint rules add `\\Flagged`
-- if copy succeeds but source cleanup fails, state is stored as `cleanup_pending` with action `move_copy_succeeded_cleanup_pending`
-- worker runs an automatic cleanup pass for `cleanup_pending` records before processing new candidates
-- `cleanup_cli` can still retry source-folder cleanup manually for pending records
-- startup preflight validates source and target folders before mailbox processing begins
-- cleanup pass verifies stored `UIDVALIDITY` before deleting from source; mismatches are skipped and logged
-- IMAP operations use retry and reconnect with `IMAP_MAX_RETRIES` and `IMAP_RETRY_BACKOFF_SECONDS`
-- source deletion prefers IMAP `UID EXPUNGE`; folder-level `EXPUNGE` is disabled by default and requires explicit `IMAP_ALLOW_FOLDER_EXPUNGE=true`
-- when folder-level `EXPUNGE` is used, the worker now refuses to proceed if the source folder already contains other `\\Deleted` messages and aborts if the deleted set is not exactly the current message
-- candidate selection is configurable with `IMAP_SEARCH_CRITERION` and capped by `IMAP_FETCH_LIMIT`
-- `IMAP_SEARCH_CRITERION` is intentionally limited to a small safe whitelist: `ALL`, `UNSEEN`, `UNANSWERED`, `FLAGGED`, `UNSEEN UNANSWERED`, `UNSEEN FLAGGED`
-- fetched candidates now carry IMAP `UIDVALIDITY` into persisted workflow state
-- state stores both a message fingerprint and a content fingerprint; content fingerprint is used only as fallback deduplication when `Message-ID` is missing
-- state stores `target_uid` when the IMAP server returns `COPYUID`, which improves post-copy recovery visibility
-- `DRY_RUN=true` is a simulation mode: no IMAP mutation, no terminal SQLite state, no draft files
-- cleanup candidate selection now targets only explicit `cleanup_pending` records; legacy cleanup heuristics are no longer part of the main runtime path
-- `LLM_FAILURE_ROUTE_TO_UNCERTAIN=true` routes LLM outages or invalid model output to `INBOX.AI-Uncertain` state instead of silently exhausting retries
-- audit logs redact direct PII fields by default; set `AUDIT_REDACT_PII=false` only for tightly controlled debugging
+- `INBOX.AI-Review` is worker-owned
+- target folders already exist
+- IMAP routing uses `copy -> delete_message`
+- metrics are exposed to Prometheus and Grafana
+- worker scheduling is handled by `launchd`
 
-## Operational assumptions
-
-- `INBOX.AI-Review` should be treated as a worker-owned source folder in production.
-- Prefer IMAP servers with `UIDPLUS`; use `IMAP_ALLOW_FOLDER_EXPUNGE=true` only when the source folder is exclusively owned by this worker.
-- The current production host on `mail0.mydevil.net` does not advertise `UIDPLUS`; the active multi-mailbox manifest therefore sets `imap_allow_folder_expunge: true` per mailbox as an explicit operational override after preflight verification.
-- Do not run multiple workers or manual IMAP cleanup flows against the same source folder at the same time.
-- `IMAP_SEARCH_CRITERION=UNSEEN` is the recommended pilot setting. `ALL` is supported, but paired with a low `IMAP_FETCH_LIMIT` it can hide backlog behavior.
-
-## Operational commands
-
-Compact status:
+Useful commands:
 
 ```bash
 .venv/bin/python -m mail_ai_agent.status_cli --state-db data/state.sqlite --audit-log logs/audit.jsonl
-```
-
-Full structured report:
-
-```bash
 .venv/bin/python -m mail_ai_agent.report_cli --state-db data/state.sqlite --audit-log logs/audit.jsonl
-```
-
-Multi-mailbox production status:
-
-```bash
-.venv/bin/python -m mail_ai_agent.status_cli --state-db data/multi-prod-state.sqlite --audit-log logs/multi-prod-audit.jsonl --json
-```
-
-Multi-mailbox production report:
-
-```bash
-.venv/bin/python -m mail_ai_agent.report_cli --state-db data/multi-prod-state.sqlite --audit-log logs/multi-prod-audit.jsonl
-```
-
-Production healthcheck:
-
-```bash
-.venv/bin/python -m mail_ai_agent.healthcheck_cli \
-  --state-db data/multi-prod-state.sqlite \
-  --audit-log logs/multi-prod-audit.jsonl \
-  --stdout-log logs/launchd-multi-prod-stdout.log \
-  --stderr-log logs/launchd-multi-prod-stderr.log
-```
-
-Manual cleanup preview:
-
-```bash
-.venv/bin/python -m mail_ai_agent.cleanup_cli
-```
-
-Apply cleanup:
-
-```bash
+.venv/bin/python -m mail_ai_agent.preflight_cli --env-file .env.multi.test
 .venv/bin/python -m mail_ai_agent.cleanup_cli --apply
 ```
 
-PII scrub for existing state and drafts:
+Historical backlog staging:
 
 ```bash
-.venv/bin/python -m mail_ai_agent.maintenance_cli \
-  --state-db data/multi-prod-state.sqlite \
-  --scrub-state-pii
-
-.venv/bin/python -m mail_ai_agent.maintenance_cli \
-  --draft-dir drafts/multi-prod-pending \
-  --scrub-draft-pii
+.venv/bin/python -m mail_ai_agent.historical_backfill_cli \
+  --env-file .env.multi.prod \
+  --export-csv output/historical-backfill-plan.csv
 ```
 
-Grafana / Prometheus checks:
+Targeted remediation:
+
+```bash
+.venv/bin/python -m mail_ai_agent.admin_mailbox_cli \
+  --env-file .env.multi.prod \
+  requeue-uncertain
+```
+
+## Monitoring
+
+The project exposes Prometheus-style metrics and is designed to integrate with Grafana.
+
+Example checks:
 
 ```bash
 bash scripts/prod_metrics.sh
@@ -195,92 +227,31 @@ curl -sS http://127.0.0.1:9177/metrics | sed -n '1,80p'
 curl -sS 'http://127.0.0.1:9090/api/v1/query?query=mailai_health_ok'
 ```
 
-The production dashboard is `mAiL Overview` in the Grafana folder `mAiL`.
+## Documentation
 
-- top row: current operational state
-- mailbox/category/route charts: historical distribution from audit-derived metrics
-- `rule_share`: quality tuning signal, not an outage signal
-- `failed`, `cleanup_pending`, and `uncertain`: operational risk signals
-
-## Bootstrap
-
-```bash
-bash scripts/bootstrap.sh
-```
-
-Production helpers:
-
-```bash
-bash scripts/prod_healthcheck.sh
-bash scripts/prod_canary.sh
-bash scripts/prod_alert.sh
-bash scripts/prod_metrics.sh
-```
-
-Quality helpers:
-
-```bash
-.venv/bin/python -m mail_ai_agent.quality_report_cli \
-  --audit-log logs/multi-prod-audit.jsonl
-
-.venv/bin/python -m mail_ai_agent.golden_set_cli \
-  tests/synthetic_data/golden_batch_001.json
-```
-
-Metrics exporter:
-
-```bash
-.venv/bin/python -m mail_ai_agent.metrics_exporter \
-  --host 127.0.0.1 \
-  --port 9177 \
-  --state-db data/multi-prod-state.sqlite \
-  --audit-log logs/multi-prod-audit.jsonl \
-  --stdout-log logs/launchd-multi-prod-stdout.log \
-  --stderr-log logs/launchd-multi-prod-stderr.log
-```
-
-One-shot Prometheus output preview:
-
-```bash
-.venv/bin/python -m mail_ai_agent.metrics_exporter \
-  --state-db data/multi-prod-state.sqlite \
-  --audit-log logs/multi-prod-audit.jsonl \
-  --stdout-log logs/launchd-multi-prod-stdout.log \
-  --stderr-log logs/launchd-multi-prod-stderr.log \
-  --oneshot
-```
-
-For a persistent local exporter, load [com.mailai.metrics.prod.plist](/Users/gniewkob/Repos/priv/mAIl/com.mailai.metrics.prod.plist) and scrape `127.0.0.1:9177/metrics` from Prometheus.
-
-## Next stage
-
-The current hardening pass is complete. The next recommended development stage is quality iteration, not more core runtime changes.
-
-Priority order:
-
-1. build a `rule suggestions` workflow from production audit patterns
-2. review repeated `route_source=llm` decisions and promote low-risk recurring cases into deterministic rules
-3. expand the golden set with anonymized real examples from production
-4. run regular quality review on `billing`, `question`, `complaint`, `other`, and `spam_or_offer`
-5. keep Grafana as the operator view, but gate rule changes through review and tests
-
-The system may suggest new rules periodically, but should not auto-apply them to production without review.
+- [docs/architecture.md](docs/architecture.md)
+- [docs/launchd-setup.md](docs/launchd-setup.md)
+- [docs/mail-server-audit-2026-03-31.md](docs/mail-server-audit-2026-03-31.md)
+- [docs/uncertain-remediation-2026-03-31.md](docs/uncertain-remediation-2026-03-31.md)
+- [docs/ollama-mlx-evaluation-2026-03-31.md](docs/ollama-mlx-evaluation-2026-03-31.md)
+- [docs/recovery-runbook.md](docs/recovery-runbook.md)
+- [docs/quality-review-checklist.md](docs/quality-review-checklist.md)
 
 ## Tests
 
-Unit tests:
+Run unit tests:
 
 ```bash
 .venv/bin/pytest -q
 ```
 
-Live Ollama test:
+Run the live Ollama integration test:
 
 ```bash
 RUN_LIVE_OLLAMA_TESTS=1 .venv/bin/pytest tests/integration/test_ollama_live.py -q
 ```
 
-Live IMAP test:
+Run the live IMAP integration test:
 
 ```bash
 RUN_LIVE_IMAP_TESTS=1 \
@@ -292,3 +263,12 @@ LIVE_IMAP_SOURCE_FOLDER=INBOX.Test-AI-Review \
 ```
 
 Do not point live IMAP tests at a production source folder.
+
+## Status
+
+The runtime and operational hardening pass is complete. The next recommended stage is quality iteration:
+
+- promote repeated safe LLM decisions into deterministic rules
+- expand the golden set with anonymized production-like examples
+- monitor category quality and model drift
+- keep operational changes auditable and reversible

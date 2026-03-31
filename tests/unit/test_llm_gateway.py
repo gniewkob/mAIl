@@ -3,7 +3,13 @@ from __future__ import annotations
 import requests
 
 from mail_ai_agent.config import Settings
-from mail_ai_agent.llm_gateway import LLMGateway, _extract_json, _normalize_classification_payload
+from mail_ai_agent.llm_gateway import (
+    LLMGateway,
+    _build_generate_payload,
+    _classification_json_schema,
+    _extract_json,
+    _normalize_classification_payload,
+)
 from mail_ai_agent.schemas import ParsedEmail
 
 
@@ -65,6 +71,24 @@ def test_normalize_classification_payload_accepts_empty_entities_list() -> None:
     assert payload["entities"] == {}
 
 
+def test_normalize_classification_payload_maps_reasoning_alias_and_drops_extra_keys() -> None:
+    payload = _normalize_classification_payload(
+        '{"category":"spam_or_offer","priority":"HIGH","requires_reply":"false","confidence":"0.95","summary":"Oferta handlowa.","entities":{},"draft_reply":"","reasoning":"To wyglada jak cold outreach.","campaign_name":"ignored"}'
+    )
+    assert payload["reasoning_short"] == "To wyglada jak cold outreach."
+    assert payload["priority"] == "high"
+    assert payload["requires_reply"] is False
+    assert payload["confidence"] == 0.95
+    assert "campaign_name" not in payload
+
+
+def test_normalize_classification_payload_backfills_reasoning_short_from_summary() -> None:
+    payload = _normalize_classification_payload(
+        '{"category":"question","priority":"medium","requires_reply":true,"confidence":0.8,"summary":"Klient pyta o termin.","entities":{},"draft_reply":null}'
+    )
+    assert payload["reasoning_short"].startswith("Klasyfikacja na podstawie treści wiadomości:")
+
+
 def test_llm_gateway_raises_after_retry_exhausted(monkeypatch) -> None:
     def fake_post(*args, **kwargs):
         return DummyResponse({"response": "not-json"}, status_code=200)
@@ -84,6 +108,12 @@ def test_prompt_template_contains_email_content_delimiters() -> None:
     from mail_ai_agent.llm_gateway import PROMPT_TEMPLATE
     assert "<email_content>" in PROMPT_TEMPLATE
     assert "</email_content>" in PROMPT_TEMPLATE
+
+
+def test_build_generate_payload_uses_schema_format() -> None:
+    payload = _build_generate_payload(model="qwen3:8b", prompt="hello", temperature=0.1)
+    assert payload["format"] == _classification_json_schema()
+    assert payload["stream"] is False
 
 
 def test_extract_json_handles_nested_objects() -> None:
