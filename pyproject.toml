@@ -18,6 +18,7 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
   "pytest>=9.0.3,<10",
+  "pytest-asyncio>=0.23,<1",
   "mypy>=1.9",
 ]
 
@@ -42,6 +43,10 @@ where = ["src"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
+asyncio_mode = "auto"
+markers = [
+  "asyncio: marks tests that require pytest-asyncio event loop support",
+]
 
 [tool.mypy]
 python_version = "3.11"

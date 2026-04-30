@@ -25,7 +25,7 @@ Use this only for onboarding a new mailbox or validating a major routing change 
 1. Run:
 
 ```bash
-.venv/bin/python -m pytest -q
+uv run --extra dev pytest -q
 ```
 
 2. Execute the worker in simulation mode:

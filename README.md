@@ -311,7 +311,7 @@ Historical reference:
 Run unit tests:
 
 ```bash
-.venv/bin/pytest -q
+uv run --extra dev pytest -q
 ```
 
 Run the live Ollama integration test:
