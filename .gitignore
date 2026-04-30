@@ -18,6 +18,7 @@ __pycache__/
 config/mailboxes*.json
 config/mailboxes*/
 !config/mailboxes.example.json
+config/*.auto.json
 
 # Runtime artifacts
 data/
@@ -36,3 +37,4 @@ drafts/multi-prod-pending/
 docs/
 plan.md
 testy.md
+*.bak.*
