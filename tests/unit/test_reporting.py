@@ -11,7 +11,8 @@ from mail_ai_agent.reporting import (
     summarize_state,
     tail_audit_records,
 )
-from mail_ai_agent.state_manager import MOVE_CLEANUP_PENDING_ACTION, StateManager
+from mail_ai_agent.constants import ActionTaken
+from mail_ai_agent.state_manager import StateManager
 
 
 def test_audit_reporting_summary_and_csv(tmp_path: Path) -> None:
@@ -20,7 +21,7 @@ def test_audit_reporting_summary_and_csv(tmp_path: Path) -> None:
         "\n".join(
             [
                 json.dumps({"mailbox_id": "inbox_a", "action_taken": "route_from_llm", "status_after": "processed", "category": "question"}),
-                json.dumps({"mailbox_id": "inbox_b", "action_taken": MOVE_CLEANUP_PENDING_ACTION, "status_after": "cleanup_pending", "error": "boom"}),
+                json.dumps({"mailbox_id": "inbox_b", "action_taken": ActionTaken.MOVE_COPY_SUCCEEDED_CLEANUP_PENDING.value, "status_after": "cleanup_pending", "error": "boom"}),
                 json.dumps({"mailbox_id": "inbox_c", "action_taken": "simulate_route_from_llm", "status_after": "simulated", "category": "question"}),
                 json.dumps({"mailbox_id": "inbox_d", "action_taken": "cleanup_source", "status_after": "processed"}),
                 json.dumps({"mailbox_id": "inbox_e", "action_taken": "cleanup_uidvalidity_mismatch", "status_after": "cleanup_pending", "error": "mismatch"}),
@@ -35,7 +36,7 @@ def test_audit_reporting_summary_and_csv(tmp_path: Path) -> None:
     export_audit_csv(records, csv_path)
 
     assert summary["records"] == 5
-    assert summary["actions"][MOVE_CLEANUP_PENDING_ACTION] == 1
+    assert summary["actions"][ActionTaken.MOVE_COPY_SUCCEEDED_CLEANUP_PENDING.value] == 1
     assert summary["statuses"]["processed"] == 2
     assert summary["mailboxes"]["inbox_a"] == 1
     assert summary["cleanup_pending"] == 2
@@ -50,7 +51,7 @@ def test_audit_reporting_counts_all_cleanup_pending_statuses(tmp_path: Path) -> 
     audit_path.write_text(
         "\n".join(
             [
-                json.dumps({"status_after": "cleanup_pending", "action_taken": MOVE_CLEANUP_PENDING_ACTION}),
+                json.dumps({"status_after": "cleanup_pending", "action_taken": ActionTaken.MOVE_COPY_SUCCEEDED_CLEANUP_PENDING.value}),
                 json.dumps({"status_after": "cleanup_pending", "action_taken": "cleanup_uidvalidity_mismatch"}),
             ]
         )
@@ -118,8 +119,74 @@ def test_state_reporting_summary_and_csv(tmp_path: Path) -> None:
     assert summary["statuses"]["cleanup_pending"] == 1
     assert summary["mailboxes"]["inbox_a"] == 2
     assert summary["cleanup_pending"] == 1
+    assert summary["uncertain_by_mailbox"] == {}
+    assert summary["failed_by_mailbox"] == {}
     assert exported_rows == 2
     assert csv_path.exists()
+
+
+def test_summarize_state_includes_uncertain_by_mailbox(tmp_path: Path) -> None:
+    manager = StateManager(tmp_path / "state.sqlite")
+    lease_a = manager.acquire_lease(
+        mailbox_id="inbox_a",
+        message_id="msg-1",
+        fingerprint="fp-1",
+        imap_uid="10",
+        sender="client@example.com",
+        subject="Pytanie",
+        source_folder="INBOX.AI-Review",
+        internaldate=None,
+        worker_id="worker-1",
+        lease_seconds=60,
+        max_retries=3,
+    )
+    assert lease_a.record is not None
+    manager.mark_uncertain(lease_a.record.id, category="other", confidence=0.2, error_message="manual review")
+
+    lease_b = manager.acquire_lease(
+        mailbox_id="inbox_b",
+        message_id="msg-2",
+        fingerprint="fp-2",
+        imap_uid="11",
+        sender="client2@example.com",
+        subject="Drugie pytanie",
+        source_folder="INBOX.AI-Review",
+        internaldate=None,
+        worker_id="worker-1",
+        lease_seconds=60,
+        max_retries=3,
+    )
+    assert lease_b.record is not None
+    manager.mark_uncertain(lease_b.record.id, category="other", confidence=0.2, error_message="manual review")
+
+    summary = summarize_state(tmp_path / "state.sqlite")
+
+    assert summary["uncertain_by_mailbox"] == {"inbox_a": 1, "inbox_b": 1}
+    assert summary["failed_by_mailbox"] == {}
+
+
+def test_summarize_state_includes_failed_by_mailbox(tmp_path: Path) -> None:
+    manager = StateManager(tmp_path / "state.sqlite")
+    lease = manager.acquire_lease(
+        mailbox_id="inbox_a",
+        message_id="msg-1",
+        fingerprint="fp-1",
+        imap_uid="10",
+        sender="client@example.com",
+        subject="Pytanie",
+        source_folder="INBOX.AI-Review",
+        internaldate=None,
+        worker_id="worker-1",
+        lease_seconds=60,
+        max_retries=3,
+    )
+    assert lease.record is not None
+    manager.mark_failed(lease.record.id, error_message="boom", error_type="RuntimeError")
+
+    summary = summarize_state(tmp_path / "state.sqlite")
+
+    assert summary["failed_by_mailbox"] == {"inbox_a": 1}
+    assert summary["uncertain_by_mailbox"] == {}
 
 
 def test_tail_audit_records_reads_last_n_lines(tmp_path: Path) -> None:

@@ -6,8 +6,10 @@ from email.message import EmailMessage
 from pathlib import Path
 
 from mail_ai_agent.config import MailboxConfig, Settings
+from mail_ai_agent.email_parser import compute_content_fingerprint, compute_message_fingerprint
 from mail_ai_agent.schemas import CandidateMessage, LLMClassification, ParsedEmail
-from mail_ai_agent.state_manager import MOVE_CLEANUP_PENDING_ACTION, StateManager
+from mail_ai_agent.constants import ActionTaken, MOVE_CLEANUP_PENDING_ACTION
+from mail_ai_agent.state_manager import StateManager
 
 
 def make_settings(tmp_path: Path) -> Settings:
@@ -60,7 +62,7 @@ class FakeIMAPClient:
     def get_uidvalidity(self, folder: str) -> str | None:
         return "999"
 
-    def validate_routing_setup(self, *, source_folder: str, target_folders: list[str], dry_run: bool) -> None:
+    def validate_runtime_setup(self, *, source_folder: str, target_folders: list[str], dry_run: bool) -> None:
         self.validated.append((source_folder, tuple(target_folders), dry_run))
 
 
@@ -95,7 +97,7 @@ class FakeMultiMailboxIMAPClient:
     def get_uidvalidity(self, folder: str) -> str | None:
         return "99999"
 
-    def validate_routing_setup(self, *, source_folder: str, target_folders: list[str], dry_run: bool) -> None:
+    def validate_runtime_setup(self, *, source_folder: str, target_folders: list[str], dry_run: bool) -> None:
         return None
 
 
@@ -111,7 +113,7 @@ class FakeUidValidityMismatchIMAPClient(FakeIMAPClient):
 
 
 class FakePreflightFailingIMAPClient(FakeIMAPClient):
-    def validate_routing_setup(self, *, source_folder: str, target_folders: list[str], dry_run: bool) -> None:
+    def validate_runtime_setup(self, *, source_folder: str, target_folders: list[str], dry_run: bool) -> None:
         raise RuntimeError("missing target folder")
 
 
@@ -206,6 +208,9 @@ def test_process_inbox_dry_run_does_not_persist_state_or_drafts(monkeypatch, tmp
                 "INBOX.Appointments",
                 "INBOX.Questions",
                 "INBOX.Complaints",
+                "Junk",
+                "INBOX.Newsletter",
+                "INBOX.Offer",
                 "INBOX.Other",
                 "INBOX.Billing",
                 "INBOX.System",
@@ -271,7 +276,7 @@ def test_process_inbox_marks_cleanup_pending_when_delete_fails(monkeypatch, tmp_
     assert record.status.value == "cleanup_pending"
     assert record.uidvalidity == "999"
     assert record.target_folder == "INBOX.Questions"
-    assert record.action_taken == MOVE_CLEANUP_PENDING_ACTION
+    assert record.action_taken == ActionTaken.MOVE_COPY_SUCCEEDED_CLEANUP_PENDING.value
 
     retry = manager.acquire_lease(
         mailbox_id=settings.default_mailbox_id(),
@@ -291,7 +296,7 @@ def test_process_inbox_marks_cleanup_pending_when_delete_fails(monkeypatch, tmp_
 
     audit_lines = (tmp_path / "audit.jsonl").read_text(encoding="utf-8").splitlines()
     payload = json.loads(audit_lines[0])
-    assert payload["action_taken"] == MOVE_CLEANUP_PENDING_ACTION
+    assert payload["action_taken"] == ActionTaken.MOVE_COPY_SUCCEEDED_CLEANUP_PENDING.value
 
 
 def test_process_inbox_runs_cleanup_pass_before_processing(monkeypatch, tmp_path: Path) -> None:
@@ -380,7 +385,7 @@ def test_process_inbox_skips_cleanup_when_uidvalidity_mismatches(monkeypatch, tm
     still_pending = manager.get_by_message_id(settings.default_mailbox_id(), "cleanup-msg@example.com")
     assert still_pending is not None
     assert still_pending.status.value == "cleanup_pending"
-    assert still_pending.action_taken == MOVE_CLEANUP_PENDING_ACTION
+    assert still_pending.action_taken == ActionTaken.MOVE_COPY_SUCCEEDED_CLEANUP_PENDING.value
 
     audit_lines = [json.loads(line) for line in (tmp_path / "audit.jsonl").read_text(encoding="utf-8").splitlines()]
     mismatch_entries = [line for line in audit_lines if line.get("action_taken") == "cleanup_uidvalidity_mismatch"]
@@ -431,10 +436,10 @@ def test_process_inbox_keeps_cleanup_pending_when_cleanup_delete_fails(monkeypat
     still_pending = manager.get_by_message_id(settings.default_mailbox_id(), "cleanup-msg@example.com")
     assert still_pending is not None
     assert still_pending.status.value == "cleanup_pending"
-    assert still_pending.action_taken == MOVE_CLEANUP_PENDING_ACTION
+    assert still_pending.action_taken == ActionTaken.MOVE_COPY_SUCCEEDED_CLEANUP_PENDING.value
 
     audit_lines = [json.loads(line) for line in (tmp_path / "audit.jsonl").read_text(encoding="utf-8").splitlines()]
-    cleanup_entries = [line for line in audit_lines if line.get("action_taken") == MOVE_CLEANUP_PENDING_ACTION]
+    cleanup_entries = [line for line in audit_lines if line.get("action_taken") == ActionTaken.MOVE_COPY_SUCCEEDED_CLEANUP_PENDING.value]
     assert len(cleanup_entries) == 2
 
 
@@ -591,7 +596,7 @@ def test_process_mailboxes_isolates_mailbox_preflight_failures(monkeypatch, tmp_
     )
 
     class MixedIMAPClient(FakeMultiMailboxIMAPClient):
-        def validate_routing_setup(self, *, source_folder: str, target_folders: list[str], dry_run: bool) -> None:
+        def validate_runtime_setup(self, *, source_folder: str, target_folders: list[str], dry_run: bool) -> None:
             if self.mailbox.mailbox_id == "broken":
                 raise RuntimeError("missing target folder")
 
@@ -673,13 +678,31 @@ class FakeTwoCandidateIMAPClient(FakeIMAPClient):
 
 
 class FakeBrokenParseIMAPClient(FakeIMAPClient):
+    _msg_deleted: ClassVar[bool] = False
+
     def fetch_candidates(self, folder: str) -> list[CandidateMessage]:
+        if FakeBrokenParseIMAPClient._msg_deleted:
+            return []
         message = EmailMessage()
         message["From"] = "bad@example.com"
         message["Subject"] = "Uszkodzona wiadomosc"
         message["Message-ID"] = "<bad-1@example.com>"
         message.set_content("to bedzie blad parsera")
         return [CandidateMessage(uid="41", uidvalidity="999", internaldate=None, raw_bytes=message.as_bytes())]
+
+    def delete_message(self, folder: str, uid: str) -> None:
+        super().delete_message(folder, uid)
+        FakeBrokenParseIMAPClient._msg_deleted = True
+
+
+class FakeConflictDuplicateIMAPClient(FakeIMAPClient):
+    def fetch_candidates(self, folder: str) -> list[CandidateMessage]:
+        message = EmailMessage()
+        message["From"] = "spam@example.com"
+        message["Subject"] = "Promocja tygodnia"
+        message["Message-ID"] = "<conflict@example.com>"
+        message.set_content("Kliknij tutaj po oferte tygodnia")
+        return [CandidateMessage(uid="99", uidvalidity="999", internaldate=None, raw_bytes=message.as_bytes())]
 
 
 def test_process_inbox_auth_failure_sets_flag_and_logs_critical(monkeypatch, tmp_path: Path) -> None:
@@ -724,7 +747,7 @@ def test_process_inbox_continues_after_parse_failure(monkeypatch, tmp_path: Path
     FakeTwoCandidateIMAPClient.validated = []
     monkeypatch.setattr("mail_ai_agent.main.IMAPClient", FakeTwoCandidateIMAPClient)
     monkeypatch.setattr("mail_ai_agent.main.LLMGateway", FakeLLMGateway)
-    monkeypatch.setattr("mail_ai_agent.main.parse_email", fake_parse_email)
+    monkeypatch.setattr("mail_ai_agent.message_processor.parse_email", fake_parse_email)
     settings = make_settings(tmp_path)
 
     report = process_inbox(settings)
@@ -748,7 +771,7 @@ def test_process_inbox_routes_parse_failure_to_uncertain_once_in_prod(monkeypatc
     FakeBrokenParseIMAPClient.validated = []
     monkeypatch.setattr("mail_ai_agent.main.IMAPClient", FakeBrokenParseIMAPClient)
     monkeypatch.setattr("mail_ai_agent.main.LLMGateway", FakeLLMGateway)
-    monkeypatch.setattr("mail_ai_agent.main.parse_email", fake_parse_email)
+    monkeypatch.setattr("mail_ai_agent.message_processor.parse_email", fake_parse_email)
     settings = make_settings(tmp_path).model_copy(update={"dry_run": False})
 
     first = process_inbox(settings)
@@ -759,7 +782,7 @@ def test_process_inbox_routes_parse_failure_to_uncertain_once_in_prod(monkeypatc
     assert first.uncertain == 1
     assert first.failed == 0
     assert second.uncertain == 0
-    assert second.skipped == 1
+    assert second.candidates_seen == 0  # Message deleted from source, no candidates to process
     assert first_copied == [("INBOX.AI-Review", "41", "INBOX.AI-Uncertain")]
     assert first_deleted == [("INBOX.AI-Review", "41")]
 
@@ -778,4 +801,218 @@ def test_process_inbox_routes_parse_failure_to_uncertain_once_in_prod(monkeypatc
 
     audit_lines = [json.loads(line) for line in (tmp_path / "audit.jsonl").read_text(encoding="utf-8").splitlines()]
     assert audit_lines[0]["action_taken"] == "move_route_uncertain_parse_failure"
-    assert audit_lines[1]["action_taken"] == "skip_already_done"
+    # Second run has no candidates (message was deleted), so only one audit line
+
+
+def test_process_inbox_cleans_source_message_when_record_already_processed(monkeypatch, tmp_path: Path) -> None:
+    from mail_ai_agent.main import process_inbox
+
+    FakeIMAPClient.copied = []
+    FakeIMAPClient.flagged = []
+    FakeIMAPClient.deleted = []
+    FakeIMAPClient.validated = []
+    monkeypatch.setattr("mail_ai_agent.main.IMAPClient", FakeIMAPClient)
+    monkeypatch.setattr("mail_ai_agent.main.LLMGateway", FakeLLMGateway)
+
+    settings = make_settings(tmp_path).model_copy(update={"dry_run": False})
+    manager = StateManager(tmp_path / "state.sqlite")
+
+    message = EmailMessage()
+    message["From"] = "client@example.com"
+    message["Subject"] = "Pytanie o cenę"
+    message["Message-ID"] = "<test-1@example.com>"
+    message.set_content("Jaka jest cena usługi manicure?")
+    parsed = ParsedEmail.model_validate(
+        {
+            "message_id": "<test-1@example.com>",
+            "sender": "client@example.com",
+            "subject": "Pytanie o cenę",
+            "plain_text_body": "Jaka jest cena usługi manicure?",
+            "normalized_body": "Jaka jest cena usługi manicure?",
+        }
+    )
+
+    lease = manager.acquire_lease(
+        mailbox_id=settings.default_mailbox_id(),
+        message_id=parsed.message_id,
+        fingerprint=compute_message_fingerprint(parsed),
+        content_fingerprint=compute_content_fingerprint(parsed),
+        imap_uid="42",
+        uidvalidity="999",
+        sender=parsed.sender,
+        sender_sha256=None,
+        subject=parsed.subject,
+        subject_sha256=None,
+        source_folder="INBOX.AI-Review",
+        internaldate=None,
+        worker_id=settings.worker_id,
+        lease_seconds=settings.processing_lease_seconds,
+        max_retries=settings.max_retries,
+    )
+    assert lease.record is not None
+    manager.mark_processed(
+        lease.record.id,
+        category="question",
+        confidence=0.91,
+        target_folder="INBOX.Questions",
+        target_uid="142",
+        action_taken="move_route_from_llm",
+    )
+
+    report = process_inbox(settings)
+
+    assert report.processed == 0
+    assert report.skipped == 1
+    assert FakeIMAPClient.deleted == [("INBOX.AI-Review", "42")]
+
+    audit_lines = [json.loads(line) for line in (tmp_path / "audit.jsonl").read_text(encoding="utf-8").splitlines()]
+    assert audit_lines[-1]["action_taken"] == "cleanup_source_already_done"
+
+
+def test_process_inbox_cleans_source_message_for_safe_processed_conflict(monkeypatch, tmp_path: Path) -> None:
+    from mail_ai_agent.main import process_inbox
+
+    FakeConflictDuplicateIMAPClient.copied = []
+    FakeConflictDuplicateIMAPClient.flagged = []
+    FakeConflictDuplicateIMAPClient.deleted = []
+    FakeConflictDuplicateIMAPClient.validated = []
+    monkeypatch.setattr("mail_ai_agent.main.IMAPClient", FakeConflictDuplicateIMAPClient)
+    monkeypatch.setattr("mail_ai_agent.main.LLMGateway", FakeLLMGateway)
+
+    settings = make_settings(tmp_path).model_copy(update={"dry_run": False})
+    manager = StateManager(tmp_path / "state.sqlite")
+    parsed = ParsedEmail.model_validate(
+        {
+            "message_id": "<conflict@example.com>",
+            "sender": "spam@example.com",
+            "subject": "Promocja tygodnia",
+            "plain_text_body": "Kliknij tutaj po oferte tygodnia",
+            "normalized_body": "Kliknij tutaj po oferte tygodnia",
+        }
+    )
+    fingerprint = compute_message_fingerprint(parsed)
+    content_fingerprint = compute_content_fingerprint(parsed)
+
+    by_message_id = manager.acquire_lease(
+        mailbox_id=settings.default_mailbox_id(),
+        message_id=parsed.message_id,
+        fingerprint="older-message-fingerprint",
+        content_fingerprint="older-message-content-fingerprint",
+        imap_uid="10",
+        uidvalidity="999",
+        sender=parsed.sender,
+        sender_sha256=None,
+        subject=parsed.subject,
+        subject_sha256=None,
+        source_folder="INBOX.AI-Review",
+        internaldate=None,
+        worker_id="worker-1",
+        lease_seconds=settings.processing_lease_seconds,
+        max_retries=settings.max_retries,
+    )
+    assert by_message_id.record is not None
+    manager.mark_processed(
+        by_message_id.record.id,
+        category="other",
+        confidence=0.7,
+        target_folder="INBOX.Other",
+        target_uid="110",
+        action_taken="move_route_from_llm",
+    )
+
+    by_fingerprint = manager.acquire_lease(
+        mailbox_id=settings.default_mailbox_id(),
+        message_id="<older-copy@example.com>",
+        fingerprint=fingerprint,
+        content_fingerprint=content_fingerprint,
+        imap_uid="11",
+        uidvalidity="999",
+        sender=parsed.sender,
+        sender_sha256=None,
+        subject=parsed.subject,
+        subject_sha256=None,
+        source_folder="INBOX.AI-Review",
+        internaldate=None,
+        worker_id="worker-2",
+        lease_seconds=settings.processing_lease_seconds,
+        max_retries=settings.max_retries,
+    )
+    assert by_fingerprint.record is not None
+    manager.mark_processed(
+        by_fingerprint.record.id,
+        category="other",
+        confidence=0.71,
+        target_folder="INBOX.Other",
+        target_uid="111",
+        action_taken="move_route_from_llm",
+    )
+
+    report = process_inbox(settings)
+
+    assert report.processed == 0
+    assert report.conflicts == 1
+    assert report.skipped == 0
+    assert FakeConflictDuplicateIMAPClient.deleted == [("INBOX.AI-Review", "99")]
+
+    audit_lines = [json.loads(line) for line in (tmp_path / "audit.jsonl").read_text(encoding="utf-8").splitlines()]
+    assert audit_lines[-1]["action_taken"] == "cleanup_source_conflict_duplicate"
+
+
+def test_process_inbox_cleans_source_message_for_processed_message_id_mismatch(monkeypatch, tmp_path: Path) -> None:
+    from mail_ai_agent.main import process_inbox
+
+    FakeConflictDuplicateIMAPClient.copied = []
+    FakeConflictDuplicateIMAPClient.flagged = []
+    FakeConflictDuplicateIMAPClient.deleted = []
+    FakeConflictDuplicateIMAPClient.validated = []
+    monkeypatch.setattr("mail_ai_agent.main.IMAPClient", FakeConflictDuplicateIMAPClient)
+    monkeypatch.setattr("mail_ai_agent.main.LLMGateway", FakeLLMGateway)
+
+    settings = make_settings(tmp_path).model_copy(update={"dry_run": False})
+    manager = StateManager(tmp_path / "state.sqlite")
+    parsed = ParsedEmail.model_validate(
+        {
+            "message_id": "<conflict@example.com>",
+            "sender": "spam@example.com",
+            "subject": "Promocja tygodnia",
+            "plain_text_body": "Kliknij tutaj po oferte tygodnia",
+            "normalized_body": "Kliknij tutaj po oferte tygodnia",
+        }
+    )
+
+    existing = manager.acquire_lease(
+        mailbox_id=settings.default_mailbox_id(),
+        message_id=parsed.message_id,
+        fingerprint="older-message-fingerprint",
+        content_fingerprint="older-message-content-fingerprint",
+        imap_uid="10",
+        uidvalidity="999",
+        sender=parsed.sender,
+        sender_sha256=None,
+        subject=parsed.subject,
+        subject_sha256=None,
+        source_folder="INBOX.AI-Review",
+        internaldate=None,
+        worker_id="worker-1",
+        lease_seconds=settings.processing_lease_seconds,
+        max_retries=settings.max_retries,
+    )
+    assert existing.record is not None
+    manager.mark_processed(
+        existing.record.id,
+        category="other",
+        confidence=0.7,
+        target_folder="INBOX.Other",
+        target_uid="110",
+        action_taken="move_route_from_llm",
+    )
+
+    report = process_inbox(settings)
+
+    assert report.processed == 0
+    assert report.conflicts == 1
+    assert report.skipped == 0
+    assert FakeConflictDuplicateIMAPClient.deleted == [("INBOX.AI-Review", "99")]
+
+    audit_lines = [json.loads(line) for line in (tmp_path / "audit.jsonl").read_text(encoding="utf-8").splitlines()]
+    assert audit_lines[-1]["action_taken"] == "cleanup_source_conflict_duplicate"

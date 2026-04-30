@@ -11,6 +11,9 @@
       "imap_user": "shop@example.com",
       "imap_pass_ref": "keychain:mail-ai/shop@example.com",
       "imap_source_folder": "INBOX.Shop-AI-Review",
+      "imap_spam_folder": "Junk",
+      "imap_newsletter_folder": "INBOX.Shop-Newsletter",
+      "imap_offer_folder": "INBOX.Shop-Offer",
       "imap_other_folder": "INBOX.Shop-Other"
     }
   ]

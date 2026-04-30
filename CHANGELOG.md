@@ -33,10 +33,10 @@ All notable changes to this project will be documented in this file.
 ### Changed
 
 #### Breaking Changes
-None - all changes are backward compatible.
+- Historical `spam_or_offer` classification has been retired in favor of explicit `spam`, `newsletter`, and `offer`
 
 #### Internal Changes
-- `ParseStage` now catches all exceptions and marks as parse_error instead of raising
+- `ParseStage` catches parser exceptions and quarantines them as `parse_error`
 - `_safe_part_content()` has double try-except for LookupError with UTF-8 fallback
 
 ### Performance

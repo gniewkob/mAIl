@@ -21,7 +21,7 @@ class FakePreflightIMAPClient:
     def __exit__(self, exc_type, exc, tb) -> None:
         return None
 
-    def validate_routing_setup(self, *, source_folder: str, target_folders: list[str], dry_run: bool) -> None:
+    def validate_preflight_setup(self, *, source_folder: str, target_folders: list[str], dry_run: bool) -> None:
         self.validated.append((source_folder, tuple(target_folders), dry_run))
         if self.mailbox.mailbox_id == "broken":
             raise RuntimeError("missing folder")

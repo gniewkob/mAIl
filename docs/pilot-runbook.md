@@ -4,6 +4,8 @@
 
 Use the worker on a real mailbox in a controlled way, with enough observability to stop before any bad automation compounds.
 
+Use this only for onboarding a new mailbox or validating a major routing change in isolation. It is not the primary runbook for the current production estate.
+
 ## Preconditions
 
 - Source folder is dedicated to this workflow, ideally `INBOX.AI-Review`.

@@ -93,7 +93,33 @@ Action:
 ```
 
 2. Review recurring patterns.
-3. Extend deterministic rules before changing the model prompt.
+3. Check whether the backlog is mostly category `other` with moderate confidence.
+4. Prefer policy tuning first:
+   - keep the stricter global move threshold for business-sensitive categories
+   - use the lower `OTHER_MOVE_CONFIDENCE_THRESHOLD` for low-signal general mail
+5. Extend deterministic rules before changing the model prompt.
+6. Safe replay without deleting originals:
+
+```bash
+.venv/bin/python -m mail_ai_agent.historical_backfill_cli \
+  --env-file .env.multi.prod \
+  --apply \
+  --keep-source \
+  --force-reprocess \
+  --folders INBOX.AI-Uncertain
+```
+
+## `parse_error`
+
+1. Confirm the current count on the dashboard or raw metrics:
+
+```bash
+curl -sS http://127.0.0.1:9177/metrics | rg 'mailai_category_records\\{category="parse_error"\\}'
+```
+
+2. Export a review slice or inspect the newest uncertain audit entries.
+3. Look for recurring parser failures such as broken charsets, malformed MIME structure, or quarantine move errors.
+4. Fix parser behavior before relaxing routing logic.
 
 ## PII scrub
 

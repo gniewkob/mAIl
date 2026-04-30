@@ -79,6 +79,22 @@ def summarize_audit_records(records: list[dict[str, Any]]) -> dict[str, Any]:
     category_counts = Counter(record.get("category") for record in records if record.get("category"))
     mailbox_counts = Counter(record.get("mailbox_id") for record in records if record.get("mailbox_id"))
     errors = [record for record in records if record.get("error")]
+    expected_skip_actions = {"skip_already_done", "skip_conflict", "skip_locked"}
+    processing_failure_actions = {
+        "failed",
+        "failed_parse",
+        "failed_classify",
+        "failed_route",
+        "mailbox_failed",
+        "imap_auth_failed",
+        "move_copy_succeeded_cleanup_pending",
+        "move_route_uncertain_llm_failure",
+        "move_route_uncertain_parse_failure",
+        "cleanup_source_already_done_failed",
+    }
+    expected_skips = sum(int(action_counts.get(action, 0)) for action in expected_skip_actions)
+    processing_failures = sum(int(action_counts.get(action, 0)) for action in processing_failure_actions)
+    errors_excluding_expected_skips = max(0, len(errors) - expected_skips)
     cleanup_pending = status_counts.get(WorkflowStatus.CLEANUP_PENDING.value, 0)
     return {
         "records": len(records),
@@ -87,6 +103,9 @@ def summarize_audit_records(records: list[dict[str, Any]]) -> dict[str, Any]:
         "categories": dict(sorted(category_counts.items())),
         "mailboxes": dict(sorted(mailbox_counts.items())),
         "errors": len(errors),
+        "errors_excluding_expected_skips": errors_excluding_expected_skips,
+        "expected_skips": expected_skips,
+        "processing_failures": processing_failures,
         "cleanup_pending": cleanup_pending,
         "simulated": status_counts.get("simulated", 0),
         "cleanup_pass_processed": action_counts.get("cleanup_source", 0),
@@ -121,7 +140,8 @@ def export_state_csv(db_path: Path, destination: Path) -> int:
                     fieldnames = list(row.keys())
                     writer = csv.DictWriter(handle, fieldnames=fieldnames)
                     writer.writeheader()
-                assert writer is not None
+                if writer is None:
+                    raise RuntimeError("CSV writer not initialized")
                 writer.writerow(dict(row))
                 row_count += 1
     tmp.replace(destination)
@@ -130,7 +150,14 @@ def export_state_csv(db_path: Path, destination: Path) -> int:
 
 def summarize_state(db_path: Path) -> dict[str, Any]:
     if not db_path.exists():
-        return {"records": 0, "statuses": {}, "mailboxes": {}, "cleanup_pending": 0}
+        return {
+            "records": 0,
+            "statuses": {},
+            "mailboxes": {},
+            "cleanup_pending": 0,
+            "uncertain_by_mailbox": {},
+            "failed_by_mailbox": {},
+        }
     with closing(sqlite3.connect(db_path)) as conn, conn:
         conn.row_factory = sqlite3.Row
         rows = conn.execute(
@@ -149,6 +176,26 @@ def summarize_state(db_path: Path) -> dict[str, Any]:
             ORDER BY mailbox_id
             """
         ).fetchall()
+        uncertain_mailbox_rows = conn.execute(
+            """
+            SELECT mailbox_id, COUNT(*) AS count
+            FROM email_processing_state
+            WHERE status = ?
+            GROUP BY mailbox_id
+            ORDER BY mailbox_id
+            """,
+            (WorkflowStatus.UNCERTAIN.value,),
+        ).fetchall()
+        failed_mailbox_rows = conn.execute(
+            """
+            SELECT mailbox_id, COUNT(*) AS count
+            FROM email_processing_state
+            WHERE status = ?
+            GROUP BY mailbox_id
+            ORDER BY mailbox_id
+            """,
+            (WorkflowStatus.FAILED.value,),
+        ).fetchall()
         total = conn.execute("SELECT COUNT(*) FROM email_processing_state").fetchone()[0]
         cleanup_pending = conn.execute(
             "SELECT COUNT(*) FROM email_processing_state WHERE status = ?",
@@ -159,4 +206,6 @@ def summarize_state(db_path: Path) -> dict[str, Any]:
         "statuses": {row["status"]: row["count"] for row in rows},
         "mailboxes": {row["mailbox_id"]: row["count"] for row in mailbox_rows},
         "cleanup_pending": cleanup_pending,
+        "uncertain_by_mailbox": {row["mailbox_id"]: row["count"] for row in uncertain_mailbox_rows},
+        "failed_by_mailbox": {row["mailbox_id"]: row["count"] for row in failed_mailbox_rows},
     }

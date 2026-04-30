@@ -1,20 +1,11 @@
 from __future__ import annotations
 
 from datetime import datetime
-from enum import Enum
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-
-class WorkflowStatus(str, Enum):
-    NEW = "new"
-    PROCESSING = "processing"
-    PROCESSED = "processed"
-    UNCERTAIN = "uncertain"
-    CLEANUP_PENDING = "cleanup_pending"
-    FAILED = "failed"
-    SKIPPED = "skipped"
+from .constants import ActionTaken, WorkflowStatus
 
 
 class AttachmentMeta(BaseModel):
@@ -50,7 +41,7 @@ class LLMEntities(BaseModel):
 class LLMClassification(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
-    category: Literal["appointment", "question", "complaint", "spam_or_offer", "billing", "system", "other"]
+    category: Literal["appointment", "question", "complaint", "spam", "newsletter", "offer", "billing", "system", "other"]
     priority: Literal["high", "medium", "low"]
     requires_reply: bool
     confidence: float
@@ -89,7 +80,7 @@ class FinalDecision(BaseModel):
     target_folder: str
     flags: list[str] = Field(default_factory=list)
     final_status: WorkflowStatus
-    action_taken: str
+    action_taken: ActionTaken | None = None
     requires_reply: bool = False
     summary: str | None = None
     reasoning_short: str | None = None
@@ -132,7 +123,7 @@ class EmailRecord(BaseModel):
 
 
 class LeaseAcquireResult(BaseModel):
-    outcome: Literal["acquired", "locked", "already_done", "conflict"]
+    outcome: Literal["acquired", "locked", "already_done", "conflict", "uncertain"]
     record: EmailRecord | None = None
     reason: str
 

@@ -56,7 +56,7 @@ def test_invalid_llm_classification_rejects_extra_fields() -> None:
         LLMClassification.model_validate(payload)
 
 
-def test_llm_classification_accepts_billing_and_system() -> None:
+def test_llm_classification_accepts_billing_system_spam_newsletter_and_offer() -> None:
     from mail_ai_agent.schemas import LLMClassification
     c = LLMClassification(
         category="billing",
@@ -78,3 +78,32 @@ def test_llm_classification_accepts_billing_and_system() -> None:
     )
     assert c2.category == "system"
 
+    c3 = LLMClassification(
+        category="spam",
+        priority="low",
+        requires_reply=False,
+        confidence=0.95,
+        summary="Oczywisty spam.",
+        reasoning_short="To wyglada jak wiadomosc spamowa.",
+    )
+    assert c3.category == "spam"
+
+    c4 = LLMClassification(
+        category="newsletter",
+        priority="low",
+        requires_reply=False,
+        confidence=0.92,
+        summary="Masowy newsletter promocyjny.",
+        reasoning_short="To wyglada jak mailing subskrypcyjny.",
+    )
+    assert c4.category == "newsletter"
+
+    c5 = LLMClassification(
+        category="offer",
+        priority="low",
+        requires_reply=False,
+        confidence=0.9,
+        summary="Cold outreach od agencji marketingowej.",
+        reasoning_short="To wyglada jak oferta handlowa B2B.",
+    )
+    assert c5.category == "offer"

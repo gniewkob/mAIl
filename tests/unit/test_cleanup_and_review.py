@@ -4,7 +4,8 @@ import json
 from pathlib import Path
 
 from mail_ai_agent.review_report import build_review_rows, export_review_csv, summarize_review_rows
-from mail_ai_agent.state_manager import MOVE_CLEANUP_PENDING_ACTION, StateManager
+from mail_ai_agent.constants import ActionTaken
+from mail_ai_agent.state_manager import StateManager
 
 
 def test_state_manager_lists_cleanup_candidates_for_cleanup_pending_records(tmp_path: Path) -> None:
@@ -94,7 +95,7 @@ def test_state_manager_lists_cleanup_pending_partial_moves_and_marks_them_proces
 
     candidates = manager.list_cleanup_candidates(mailbox_id="inbox_a", source_folder="INBOX.AI-Review")
     assert len(candidates) == 1
-    assert candidates[0].action_taken == MOVE_CLEANUP_PENDING_ACTION
+    assert candidates[0].action_taken == ActionTaken.MOVE_COPY_SUCCEEDED_CLEANUP_PENDING.value
 
     manager.mark_cleanup_done(candidates[0].id)
     record = manager.get_by_id(candidates[0].id)
@@ -155,7 +156,7 @@ def test_review_report_builds_rows_and_csv(tmp_path: Path) -> None:
                         "category": "question",
                         "confidence": 0.88,
                         "target_folder": "INBOX.Questions",
-                        "action_taken": MOVE_CLEANUP_PENDING_ACTION,
+                        "action_taken": ActionTaken.MOVE_COPY_SUCCEEDED_CLEANUP_PENDING.value,
                         "draft_path": None,
                         "error": "delete failed",
                     }

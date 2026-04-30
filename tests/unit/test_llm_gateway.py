@@ -73,8 +73,9 @@ def test_normalize_classification_payload_accepts_empty_entities_list() -> None:
 
 def test_normalize_classification_payload_maps_reasoning_alias_and_drops_extra_keys() -> None:
     payload = _normalize_classification_payload(
-        '{"category":"spam_or_offer","priority":"HIGH","requires_reply":"false","confidence":"0.95","summary":"Oferta handlowa.","entities":{},"draft_reply":"","reasoning":"To wyglada jak cold outreach.","campaign_name":"ignored"}'
+        '{"category":"offer","priority":"HIGH","requires_reply":"false","confidence":"0.95","summary":"Oferta handlowa.","entities":{},"draft_reply":"","reasoning":"To wyglada jak cold outreach.","campaign_name":"ignored"}'
     )
+    assert payload["category"] == "offer"
     assert payload["reasoning_short"] == "To wyglada jak cold outreach."
     assert payload["priority"] == "high"
     assert payload["requires_reply"] is False
@@ -192,3 +193,12 @@ def test_prompt_template_instructs_model_to_start_with_json() -> None:
     # Rule must instruct model to start response with JSON immediately
     assert "Zacznij" in zasady_section
     assert "JSON" in zasady_section or "klamrowego" in zasady_section
+
+
+def test_prompt_template_distinguishes_spam_newsletter_and_offer() -> None:
+    from mail_ai_agent.llm_gateway import PROMPT_TEMPLATE
+
+    assert "newsletter" in PROMPT_TEMPLATE
+    assert "offer" in PROMPT_TEMPLATE
+    assert "unsubscribe" in PROMPT_TEMPLATE
+    assert "SEO" in PROMPT_TEMPLATE

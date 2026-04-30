@@ -6,8 +6,35 @@ import sys
 from pathlib import Path
 from typing import cast
 from urllib import request
+from urllib.parse import urlparse
 
+from .constants import DEFAULT_WEBHOOK_TIMEOUT
 from .healthcheck_cli import build_health_payload
+
+
+# Allowed URL schemes for webhooks
+ALLOWED_SCHEMES = {"https", "http"}
+
+
+def validate_webhook_url(url: str) -> None:
+    """Validate webhook URL to prevent SSRF attacks.
+    
+    Raises:
+        ValueError: If URL scheme is not allowed or URL is malformed
+    """
+    try:
+        parsed = urlparse(url)
+    except Exception as exc:
+        raise ValueError(f"Invalid URL: {url}") from exc
+    
+    if parsed.scheme not in ALLOWED_SCHEMES:
+        raise ValueError(
+            f"URL scheme '{parsed.scheme}' is not allowed. "
+            f"Allowed schemes: {', '.join(ALLOWED_SCHEMES)}"
+        )
+    
+    if not parsed.netloc:
+        raise ValueError(f"URL must have a host: {url}")
 
 
 def build_alert_message(payload: dict[str, object], *, service_name: str) -> str:
@@ -30,6 +57,9 @@ def build_alert_message(payload: dict[str, object], *, service_name: str) -> str
 
 
 def send_webhook(*, webhook_url: str, message: str, payload: dict[str, object]) -> None:
+    # Validate URL to prevent SSRF
+    validate_webhook_url(webhook_url)
+    
     body = json.dumps({"text": message, "payload": payload}, ensure_ascii=False).encode("utf-8")
     req = request.Request(
         webhook_url,
@@ -37,7 +67,7 @@ def send_webhook(*, webhook_url: str, message: str, payload: dict[str, object]) 
         headers={"Content-Type": "application/json; charset=utf-8"},
         method="POST",
     )
-    with request.urlopen(req, timeout=10) as response:
+    with request.urlopen(req, timeout=DEFAULT_WEBHOOK_TIMEOUT) as response:
         if response.status >= 400:
             raise RuntimeError(f"Webhook returned status {response.status}")
 

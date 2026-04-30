@@ -5,8 +5,10 @@ from email.message import EmailMessage
 from pathlib import Path
 
 from mail_ai_agent.config import Settings
+from mail_ai_agent.email_parser import compute_content_fingerprint, compute_message_fingerprint, parse_email
 from mail_ai_agent.schemas import CandidateMessage, LLMClassification, LLMEntities
 from mail_ai_agent.historical_backfill_cli import run_historical_backfill
+from mail_ai_agent.state_manager import StateManager
 
 
 def _raw_email(*, subject: str, sender: str, body: str) -> bytes:
@@ -44,7 +46,7 @@ class FakeHistoricalIMAPClient:
     def list_folders(self) -> list[str]:
         return list(self.folders)
 
-    def validate_routing_setup(self, *, source_folder: str, target_folders: list[str], dry_run: bool) -> None:
+    def validate_runtime_setup(self, *, source_folder: str, target_folders: list[str], dry_run: bool) -> None:
         self.validated.append((source_folder, tuple(target_folders), dry_run))
 
     def fetch_candidates(self, folder: str) -> list[CandidateMessage]:
@@ -58,12 +60,16 @@ class FakeHistoricalIMAPClient:
         self.deleted.append((folder, uid))
 
 
-def _make_settings() -> Settings:
+def _make_settings(*, state_db_path: Path | None = None) -> Settings:
+    kwargs = {}
+    if state_db_path is not None:
+        kwargs["STATE_DB_PATH"] = str(state_db_path)
     return Settings(
         IMAP_HOST="imap.example.com",
         IMAP_USER="user@example.com",
         IMAP_PASS="secret",
         OLLAMA_MODEL="qwen3:8b",
+        **kwargs,
     )
 
 
@@ -150,6 +156,41 @@ def test_historical_backfill_apply_moves_messages_for_requested_folders(monkeypa
     assert mailbox_payload["results"][0]["status"] == "applied"
 
 
+def test_historical_backfill_apply_copy_only_keeps_source_messages(monkeypatch) -> None:
+    FakeHistoricalIMAPClient.reset()
+    FakeHistoricalIMAPClient.candidates_by_folder = {
+        "INBOX.Other": [
+            CandidateMessage(
+                uid="55",
+                uidvalidity="1",
+                internaldate="31-Mar-2026 10:00:00 +0000",
+                raw_bytes=_raw_email(
+                    subject="Oferta SEO i Google Ads",
+                    sender="agency@example.com",
+                    body="Mamy propozycje wspolpracy i audytu kampanii.",
+                ),
+            )
+        ]
+    }
+
+    monkeypatch.setattr("mail_ai_agent.historical_backfill_cli.IMAPClient", FakeHistoricalIMAPClient)
+
+    payload = run_historical_backfill(
+        settings=_make_settings(),
+        apply=True,
+        keep_source=True,
+        mode="classify",
+        requested_folders=["INBOX.Other"],
+    )
+
+    row = payload["mailboxes"][0]["results"][0]
+    assert payload["apply_mode"] == "copy"
+    assert row["status"] == "applied_copy_only"
+    assert row["target_folder"] == "INBOX.Offer"
+    assert FakeHistoricalIMAPClient.copied == [("INBOX.Other", "55", "INBOX.Offer")]
+    assert FakeHistoricalIMAPClient.deleted == []
+
+
 def test_historical_backfill_classify_mode_keeps_direct_routing_available(monkeypatch) -> None:
     FakeHistoricalIMAPClient.reset()
     FakeHistoricalIMAPClient.candidates_by_folder = {
@@ -194,3 +235,71 @@ def test_historical_backfill_classify_mode_keeps_direct_routing_available(monkey
     assert row["decision_source"] == "llm"
     assert row["category"] == "question"
     assert row["target_folder"] == "INBOX.Questions"
+
+
+def test_historical_backfill_force_reprocess_resets_state_for_stage_copy_only(
+    monkeypatch, tmp_path: Path
+) -> None:
+    FakeHistoricalIMAPClient.reset()
+    raw_bytes = _raw_email(
+        subject="Historyczny mail do ponownego przetworzenia",
+        sender="legacy@example.com",
+        body="Prosze o ponowne przetworzenie tego maila.",
+    )
+    FakeHistoricalIMAPClient.candidates_by_folder = {
+        "INBOX.Other": [
+            CandidateMessage(
+                uid="77",
+                uidvalidity="1",
+                internaldate="31-Mar-2026 11:00:00 +0000",
+                raw_bytes=raw_bytes,
+            )
+        ]
+    }
+
+    monkeypatch.setattr("mail_ai_agent.historical_backfill_cli.IMAPClient", FakeHistoricalIMAPClient)
+
+    state_db = tmp_path / "state.sqlite"
+    settings = _make_settings(state_db_path=state_db)
+    state = StateManager(state_db)
+    parsed = parse_email(raw_bytes, settings)
+    lease = state.acquire_lease(
+        mailbox_id="user_example_com",
+        message_id=parsed.message_id,
+        fingerprint=compute_message_fingerprint(parsed),
+        content_fingerprint=compute_content_fingerprint(parsed),
+        imap_uid="900",
+        uidvalidity="1",
+        sender=parsed.sender,
+        subject=parsed.subject,
+        source_folder="INBOX.AI-Review",
+        internaldate=None,
+        worker_id="worker-1",
+        lease_seconds=60,
+        max_retries=3,
+    )
+    assert lease.record is not None
+    state.mark_processed(
+        lease.record.id,
+        category="other",
+        confidence=0.9,
+        target_folder="INBOX.Other",
+        action_taken="move_route_from_llm",
+    )
+
+    payload = run_historical_backfill(
+        settings=settings,
+        apply=True,
+        keep_source=True,
+        force_reprocess=True,
+        requested_folders=["INBOX.Other"],
+    )
+
+    row = payload["mailboxes"][0]["results"][0]
+    assert row["target_folder"] == "INBOX.AI-Review"
+    assert row["status"] == "applied_copy_only"
+    assert row["state_records_reset"] == 1
+    assert payload["state_records_reset"] == 1
+    assert FakeHistoricalIMAPClient.copied == [("INBOX.Other", "77", "INBOX.AI-Review")]
+    assert FakeHistoricalIMAPClient.deleted == []
+    assert state.get_by_message_id("user_example_com", parsed.message_id) is None

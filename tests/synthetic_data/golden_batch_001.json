@@ -19,12 +19,30 @@
   },
   {
     "message_id": "<golden-offer-001@local>",
-    "category_expected": "spam_or_offer",
-    "target_folder_expected": "INBOX.Other",
+    "category_expected": "offer",
+    "target_folder_expected": "INBOX.Offer",
     "status_expected": "processed",
     "subject": "Oferta SEO dla salonu",
     "from": "Agency Boost <agency@example.test>",
     "body": "Dzień dobry, chcemy przedstawić ofertę SEO i reklam dla Państwa salonu."
+  },
+  {
+    "message_id": "<golden-newsletter-001@local>",
+    "category_expected": "newsletter",
+    "target_folder_expected": "INBOX.Newsletter",
+    "status_expected": "processed",
+    "subject": "Nowa kolekcja i kod rabatowy",
+    "from": "Beauty Store <newsletter@beauty-store.test>",
+    "body": "Twoj kod rabatowy czeka. Jesli nie chcesz kolejnych wiadomosci, kliknij wypisz."
+  },
+  {
+    "message_id": "<golden-spam-001@local>",
+    "category_expected": "spam",
+    "target_folder_expected": "Junk",
+    "status_expected": "processed",
+    "subject": "Claim your prize and verify account",
+    "from": "Prize Center <promo@spam.test>",
+    "body": "Urgent action required. Claim your prize now and verify your account."
   },
   {
     "message_id": "<golden-question-001@local>",

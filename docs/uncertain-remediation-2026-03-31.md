@@ -1,6 +1,6 @@
-# Uncertain Remediation and Malformed Mail Cleanup (2026-03-31)
+# Historical Note: Uncertain Remediation and Malformed Mail Cleanup (2026-03-31)
 
-This note records the production remediation completed on 2026-03-31 after historical mailbox backfill.
+This note records a completed remediation from 2026-03-31 after historical mailbox backfill. Keep it as historical reference, not as the primary operating procedure.
 
 ## Problem
 

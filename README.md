@@ -20,12 +20,26 @@ Most inbox automation tools optimize for happy-path classification and ignore th
 ## What it does
 
 - reads mail from worker-owned IMAP source folders such as `INBOX.AI-Review`
-- applies deterministic rules first for billing, complaints, system mail, spam/offers, and known operational patterns
+- applies deterministic rules first for billing, complaints, system mail, spam, newsletters, offers, and known operational patterns
 - sends only ambiguous messages to a local Ollama model
 - converts rule or LLM output into deterministic workflow actions
-- routes mail to target folders like `INBOX.Billing`, `INBOX.Other`, `INBOX.Appointments`, or `INBOX.System`
+- routes mail to target folders like `INBOX.Billing`, `Junk`, `INBOX.Newsletter`, `INBOX.Offer`, `INBOX.Other`, `INBOX.Appointments`, or `INBOX.System`
 - persists mailbox-safe workflow state and leases in SQLite
 - writes JSONL audit logs for review, reporting, and Grafana / Prometheus metrics
+
+Current folder policy:
+
+- `spam -> Junk`
+- `newsletter -> INBOX.Newsletter`
+- `offer -> INBOX.Offer`
+- `other -> INBOX.Other`
+- `parse_error -> INBOX.AI-Uncertain`
+
+Current confidence policy:
+
+- high-signal categories use `MOVE_CONFIDENCE_THRESHOLD` (default `0.75`)
+- `other` uses a lower `OTHER_MOVE_CONFIDENCE_THRESHOLD` (default `0.50`)
+- this keeps genuinely low-signal mail out of `INBOX.AI-Uncertain` while preserving stricter routing for business-sensitive categories
 
 ## Architecture
 
@@ -111,6 +125,7 @@ Each routing action is written to JSONL audit logs, which then feed:
 | `metrics_exporter.py` / `metrics_bridge.py` | Prometheus-compatible runtime and quality metrics |
 | `historical_backfill_cli.py` | Safe backlog staging through the standard worker flow |
 | `admin_mailbox_cli.py` | Narrow operational remediation for exact IMAP/admin actions |
+| `quality_learning_cli.py` | Read-only quality-learning report with proposed `rule_engine` / prompt / parser changes |
 
 ## Security and privacy
 
@@ -186,6 +201,7 @@ Production assumes:
 
 - `INBOX.AI-Review` is worker-owned
 - target folders already exist
+- `Junk`, `INBOX.Newsletter`, and `INBOX.Offer` are provisioned before enabling production routing
 - IMAP routing uses `copy -> delete_message`
 - metrics are exposed to Prometheus and Grafana
 - worker scheduling is handled by `launchd`
@@ -197,6 +213,55 @@ Useful commands:
 .venv/bin/python -m mail_ai_agent.report_cli --state-db data/state.sqlite --audit-log logs/audit.jsonl
 .venv/bin/python -m mail_ai_agent.preflight_cli --env-file .env.multi.test
 .venv/bin/python -m mail_ai_agent.cleanup_cli --apply
+```
+
+Safe reprocess of current uncertain backlog without deleting originals:
+
+```bash
+.venv/bin/python -m mail_ai_agent.historical_backfill_cli \
+  --env-file .env.multi.prod \
+  --apply \
+  --keep-source \
+  --force-reprocess \
+  --folders INBOX.AI-Uncertain
+```
+
+Read-only quality-learning report:
+
+```bash
+.venv/bin/python -m mail_ai_agent.quality_learning_cli \
+  --state-db data/multi-prod-state.sqlite \
+  --audit-log logs/multi-prod-audit.jsonl \
+  --output-dir logs/quality-learning
+```
+
+Review or apply a generated `rule_engine.py` patch:
+
+```bash
+.venv/bin/python -m mail_ai_agent.apply_quality_patch_cli \
+  --patch logs/quality-learning/quality-learning-YYYYMMDDTHHMMSSZ-proposal-1.patch \
+  --check
+```
+
+```bash
+.venv/bin/python -m mail_ai_agent.apply_quality_patch_cli \
+  --patch logs/quality-learning/quality-learning-YYYYMMDDTHHMMSSZ-proposal-1.patch \
+  --apply
+```
+
+Historical audit cleanup after category model changes:
+
+```bash
+.venv/bin/python -m mail_ai_agent.migrate_audit_log_cli \
+  --audit-log logs/multi-prod-audit.jsonl
+```
+
+Apply with automatic backup:
+
+```bash
+.venv/bin/python -m mail_ai_agent.migrate_audit_log_cli \
+  --audit-log logs/multi-prod-audit.jsonl \
+  --apply
 ```
 
 Historical backlog staging:
@@ -229,13 +294,17 @@ curl -sS 'http://127.0.0.1:9090/api/v1/query?query=mailai_health_ok'
 
 ## Documentation
 
+Active documentation:
+
 - [docs/architecture.md](docs/architecture.md)
 - [docs/launchd-setup.md](docs/launchd-setup.md)
-- [docs/mail-server-audit-2026-03-31.md](docs/mail-server-audit-2026-03-31.md)
-- [docs/uncertain-remediation-2026-03-31.md](docs/uncertain-remediation-2026-03-31.md)
-- [docs/ollama-mlx-evaluation-2026-03-31.md](docs/ollama-mlx-evaluation-2026-03-31.md)
+- [docs/multi-mailbox-operations.md](docs/multi-mailbox-operations.md)
 - [docs/recovery-runbook.md](docs/recovery-runbook.md)
 - [docs/quality-review-checklist.md](docs/quality-review-checklist.md)
+
+Historical reference:
+
+- [docs/uncertain-remediation-2026-03-31.md](docs/uncertain-remediation-2026-03-31.md)
 
 ## Tests
 

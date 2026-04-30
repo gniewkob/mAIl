@@ -7,7 +7,8 @@ from pathlib import Path
 import pytest
 
 from mail_ai_agent.cleanup_cli import main
-from mail_ai_agent.state_manager import MOVE_CLEANUP_PENDING_ACTION, StateManager
+from mail_ai_agent.constants import ActionTaken
+from mail_ai_agent.state_manager import StateManager
 
 
 class FakeCleanupIMAPClient:
@@ -25,7 +26,7 @@ class FakeCleanupIMAPClient:
     def delete_message(self, folder: str, uid: str) -> None:
         self.deleted.append((folder, uid))
 
-    def validate_routing_setup(self, *, source_folder: str, target_folders: list[str], dry_run: bool) -> None:
+    def validate_runtime_setup(self, *, source_folder: str, target_folders: list[str], dry_run: bool) -> None:
         self.validated.append((source_folder, tuple(target_folders), dry_run))
 
     def get_uidvalidity(self, folder: str) -> str:
@@ -160,7 +161,7 @@ def test_cleanup_cli_does_not_mark_done_when_delete_fails(
 
     record = manager.get_by_message_id("user_example_com", "msg-1")
     assert record is not None
-    assert record.action_taken == MOVE_CLEANUP_PENDING_ACTION
+    assert record.action_taken == ActionTaken.MOVE_COPY_SUCCEEDED_CLEANUP_PENDING.value
     assert record.status.value == "cleanup_pending"
 
 

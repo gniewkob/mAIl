@@ -8,11 +8,12 @@ from typing import Any
 
 from .config import MailboxConfig, Settings
 from .decision_engine import decide_from_llm, decide_from_rule
-from .email_parser import parse_email
+from .email_parser import compute_content_fingerprint, compute_message_fingerprint, parse_email
 from .folder_mapper import target_folders
 from .imap_client import IMAPClient
 from .llm_gateway import LLMGateway
 from .rule_engine import evaluate_rules
+from .state_manager import StateManager
 
 _COMMON_EXCLUDED_FOLDERS = {
     "Drafts",
@@ -91,6 +92,8 @@ def run_historical_backfill(
     *,
     settings: Settings,
     apply: bool,
+    keep_source: bool = False,
+    force_reprocess: bool = False,
     mode: str = "stage",
     mailbox_id: str | None = None,
     requested_folders: list[str] | None = None,
@@ -104,14 +107,18 @@ def run_historical_backfill(
         raise ValueError("No mailboxes selected for historical backfill.")
 
     llm = LLMGateway(settings)
+    state = StateManager(settings.state_db_path) if force_reprocess else None
     payload: dict[str, Any] = {
         "apply": apply,
+        "apply_mode": "copy" if keep_source else "move",
+        "force_reprocess": force_reprocess,
         "mailboxes_processed": 0,
         "folders_selected": 0,
         "candidates_seen": 0,
         "planned": 0,
         "applied": 0,
         "failed": 0,
+        "state_records_reset": 0,
         "mailboxes": [],
     }
     export_rows: list[dict[str, Any]] = []
@@ -132,6 +139,7 @@ def run_historical_backfill(
             "planned": 0,
             "applied": 0,
             "failed": 0,
+            "state_records_reset": 0,
             "results": [],
         }
         with IMAPClient(mailbox) as imap:
@@ -147,10 +155,10 @@ def run_historical_backfill(
 
             for folder in selected:
                 try:
-                    imap.validate_routing_setup(
+                    imap.validate_runtime_setup(
                         source_folder=folder,
                         target_folders=target_folders(mailbox),
-                        dry_run=not apply,
+                        dry_run=(not apply) or keep_source,
                     )
                 except Exception as exc:
                     row = {
@@ -205,9 +213,12 @@ def run_historical_backfill(
                         "model_latency_ms": None,
                         "status": "planned",
                         "error": None,
+                        "state_records_reset": 0,
                     }
                     try:
                         parsed = parse_email(candidate.raw_bytes, settings)
+                        fingerprint = compute_message_fingerprint(parsed)
+                        content_fingerprint = compute_content_fingerprint(parsed)
                     except Exception as exc:
                         row["status"] = "failed"
                         row["action_taken"] = "parse_failed"
@@ -264,9 +275,23 @@ def run_historical_backfill(
                             row["status"] = "skipped_same_folder"
                         else:
                             try:
-                                imap.copy_message(folder, candidate.uid, str(row["target_folder"]))
-                                imap.delete_message(folder, candidate.uid)
-                                row["status"] = "applied"
+                                if force_reprocess and state is not None:
+                                    reset_count = state.delete_identity_matches(
+                                        mailbox_id=mailbox.mailbox_id,
+                                        message_id=parsed.message_id,
+                                        fingerprint=fingerprint,
+                                        content_fingerprint=content_fingerprint,
+                                    )
+                                    row["state_records_reset"] = reset_count
+                                    mailbox_payload["state_records_reset"] += reset_count
+                                    payload["state_records_reset"] += reset_count
+                                copied_uid = imap.copy_message(folder, candidate.uid, str(row["target_folder"]))
+                                row["copied_uid"] = copied_uid
+                                if keep_source:
+                                    row["status"] = "applied_copy_only"
+                                else:
+                                    imap.delete_message(folder, candidate.uid)
+                                    row["status"] = "applied"
                                 mailbox_payload["applied"] += 1
                                 payload["applied"] += 1
                             except Exception as exc:
@@ -308,12 +333,24 @@ def main() -> None:
     parser.add_argument("--fetch-limit", type=int, default=None, help="Optional per-folder fetch limit override")
     parser.add_argument("--export-csv", default=None, help="Optional CSV export path")
     parser.add_argument("--apply", action="store_true", help="Actually copy and delete messages from source folders")
+    parser.add_argument(
+        "--keep-source",
+        action="store_true",
+        help="When used with --apply, copy messages to the new target folder but keep the originals in place.",
+    )
+    parser.add_argument(
+        "--force-reprocess",
+        action="store_true",
+        help="Delete matching state rows before applying, so copied messages can be processed again by the worker.",
+    )
     args = parser.parse_args()
 
     settings = Settings(_env_file=args.env_file) if args.env_file else Settings()  # type: ignore[call-arg]
     payload = run_historical_backfill(
         settings=settings,
         apply=args.apply,
+        keep_source=args.keep_source,
+        force_reprocess=args.force_reprocess,
         mode=args.mode,
         mailbox_id=args.mailbox_id,
         requested_folders=_normalize_requested_folders(args.folders),

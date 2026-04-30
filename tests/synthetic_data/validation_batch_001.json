@@ -64,24 +64,38 @@
   },
   {
     "message_id": "<val-offer-001@local>",
-    "category_expected": "spam_or_offer",
+    "category_expected": "offer",
     "subject": "Oferta SEO dla salonu",
     "from": "Agency Boost <agency@example.test>",
     "body": "Dzien dobry, chcemy przedstawic oferte SEO i reklam dla Panstwa salonu."
   },
   {
     "message_id": "<val-offer-002@local>",
-    "category_expected": "spam_or_offer",
+    "category_expected": "offer",
     "subject": "Wspolpraca reklamowa i lead generation",
     "from": "Growth Team <growth@example.test>",
     "body": "Reprezentuje agencje marketingowa i chcialbym porozmawiac o wspolpracy reklamowej oraz pozyskiwaniu leadow."
   },
   {
     "message_id": "<val-offer-003@local>",
-    "category_expected": "spam_or_offer",
+    "category_expected": "offer",
     "subject": "Zapytanie o mozliwosc wspolpracy z salonem",
     "from": "Klient Premium <contact@premium-growth.test>",
     "body": "Dzien dobry, reprezentuje agencje marketingowa i chcialbym porozmawiac o wspolpracy SEO oraz reklamach dla salonu."
+  },
+  {
+    "message_id": "<val-newsletter-001@local>",
+    "category_expected": "newsletter",
+    "subject": "Nowa kolekcja i kod rabatowy dla Ciebie",
+    "from": "Beauty Store <newsletter@beauty-store.test>",
+    "body": "Twoj kod rabatowy czeka. Jesli nie chcesz kolejnych wiadomosci, kliknij wypisz."
+  },
+  {
+    "message_id": "<val-spam-001@local>",
+    "category_expected": "spam",
+    "subject": "Claim your prize and verify account",
+    "from": "Prize Center <promo@spam.test>",
+    "body": "Urgent action required. Claim your prize now and verify your account."
   },
   {
     "message_id": "<val-edge-001@local>",

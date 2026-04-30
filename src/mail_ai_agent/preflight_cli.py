@@ -50,7 +50,7 @@ def main() -> None:
         }
         try:
             with IMAPClient(mailbox) as imap:
-                imap.validate_routing_setup(
+                imap.validate_preflight_setup(
                     source_folder=mailbox.imap_source_folder,
                     target_folders=target_folders(mailbox),
                     dry_run=settings.dry_run,

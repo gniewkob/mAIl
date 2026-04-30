@@ -34,13 +34,17 @@ Use this checklist when reviewing real production routing quality for important 
 - obvious bounces and mailer notifications: `INBOX.System`
 - clear complaints and dissatisfaction: `INBOX.Complaints`
 - clear customer questions requiring reply: `INBOX.Questions`
-- obvious spam, cold outreach, newsletters, transactional shop noise: `INBOX.Other`
+- obvious spam: `Junk`
+- newsletters and retail promo: `INBOX.Newsletter`
+- cold outreach / agency offers: `INBOX.Offer`
+- ambiguous or transactional shop noise that does not fit the above: `INBOX.Other`
 
 ## Must not happen
 
 - billing or payment mail in `INBOX.Questions`
 - complaints in `INBOX.Other`
 - customer question in `INBOX.System`
+- spam in `INBOX.Newsletter` or `INBOX.Offer`
 - marketing/cold outreach in customer folders
 - real customer mail left in `INBOX.AI-Review`
 
@@ -60,7 +64,8 @@ For each reviewed message, check:
 
 - any misrouted billing message
 - any misrouted complaint
-- repeated false `spam_or_offer`
+- repeated false `newsletter`
+- repeated false `offer`
 - repeated `uncertain` for the same sender or subject family
 - any `mailbox_failed`, `cleanup_pending`, or `Refusing folder-level expunge`
 

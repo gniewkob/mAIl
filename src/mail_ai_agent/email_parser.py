@@ -12,6 +12,7 @@ from email.utils import parsedate_to_datetime
 from bs4 import BeautifulSoup
 
 from .config import Settings
+from .constants import EMAIL_BODY_FINGERPRINT_LIMIT
 from .schemas import AttachmentMeta, ParsedEmail
 
 QUOTED_PATTERNS = (
@@ -38,6 +39,9 @@ DISCLAIMER_PATTERNS = (
 _COMPILED_QUOTED = tuple(re.compile(p, re.IGNORECASE) for p in QUOTED_PATTERNS)
 _COMPILED_SIGNATURE = tuple(re.compile(p, re.IGNORECASE) for p in SIGNATURE_PATTERNS)
 _COMPILED_DISCLAIMER = tuple(re.compile(p, re.IGNORECASE) for p in DISCLAIMER_PATTERNS)
+_CHARSET_ALIASES = {
+    "cp-850": "cp850",
+}
 
 
 def _matches_compiled(value: str, patterns: tuple[re.Pattern[str], ...]) -> bool:
@@ -136,7 +140,7 @@ def compute_message_fingerprint(parsed_email: ParsedEmail) -> str:
             _normalize_date(parsed_email.date),
             _normalize_identity(parsed_email.sender),
             _normalize_identity(parsed_email.subject),
-            parsed_email.normalized_body[:1000].strip().lower(),
+            parsed_email.normalized_body[:EMAIL_BODY_FINGERPRINT_LIMIT].strip().lower(),
         ]
     )
     return hashlib.sha256(source.encode("utf-8")).hexdigest()
@@ -147,7 +151,7 @@ def compute_content_fingerprint(parsed_email: ParsedEmail) -> str:
         [
             _normalize_identity(parsed_email.sender),
             _normalize_identity(parsed_email.subject),
-            parsed_email.normalized_body[:1000].strip().lower(),
+            parsed_email.normalized_body[:EMAIL_BODY_FINGERPRINT_LIMIT].strip().lower(),
         ]
     )
     return hashlib.sha256(source.encode("utf-8")).hexdigest()
@@ -158,11 +162,25 @@ def _safe_part_content(part: MIMEPart) -> str:
         content = part.get_content()
     except (LookupError, UnicodeDecodeError):
         raw_payload = part.get_payload(decode=True) or b""
-        charset = part.get_content_charset() or "utf-8"
-        content = raw_payload.decode(charset, errors="replace") if isinstance(raw_payload, bytes) else str(raw_payload)
+        charset = _normalize_charset(part.get_content_charset())
+        try:
+            content = raw_payload.decode(charset, errors="replace") if isinstance(raw_payload, bytes) else str(raw_payload)
+        except LookupError:
+            # Unknown encoding, fallback to utf-8
+            content = raw_payload.decode("utf-8", errors="replace") if isinstance(raw_payload, bytes) else str(raw_payload)
     if isinstance(content, bytes):
-        return content.decode(part.get_content_charset() or "utf-8", errors="replace")
+        charset = _normalize_charset(part.get_content_charset())
+        try:
+            return content.decode(charset, errors="replace")
+        except LookupError:
+            # Unknown encoding, fallback to utf-8
+            return content.decode("utf-8", errors="replace")
     return str(content)
+
+
+def _normalize_charset(charset: str | None) -> str:
+    normalized = (charset or "utf-8").strip().lower()
+    return _CHARSET_ALIASES.get(normalized, normalized)
 
 
 def _html_to_text(content: str) -> str:
@@ -185,4 +203,3 @@ def _normalize_date(value: datetime | None) -> str:
     if value is None:
         return ""
     return value.astimezone(timezone.utc).isoformat()
-

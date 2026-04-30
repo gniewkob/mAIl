@@ -79,7 +79,7 @@ def test_rule_engine_catches_marketing_pitch_disguised_as_question() -> None:
     decision = evaluate_rules(parsed, make_mailbox())
 
     assert decision.action == "skip_ai"
-    assert decision.category == "spam_or_offer"
+    assert decision.category == "offer"
 
 
 def test_rule_engine_catches_polish_inflections_for_marketing_offer() -> None:
@@ -92,7 +92,7 @@ def test_rule_engine_catches_polish_inflections_for_marketing_offer() -> None:
     decision = evaluate_rules(parsed, make_mailbox())
 
     assert decision.action == "skip_ai"
-    assert decision.category == "spam_or_offer"
+    assert decision.category == "offer"
 
 
 def test_rule_engine_catches_newsletter_sender_without_llm() -> None:
@@ -105,7 +105,84 @@ def test_rule_engine_catches_newsletter_sender_without_llm() -> None:
     decision = evaluate_rules(parsed, make_mailbox())
 
     assert decision.action == "skip_ai"
-    assert decision.category == "spam_or_offer"
+    assert decision.category == "newsletter"
+
+
+def test_rule_engine_routes_retail_newsletter_with_coupon_without_llm() -> None:
+    parsed = ParsedEmail(
+        sender="Sklep Beauty <promo@beauty-store.test>",
+        subject="Nowa kolekcja i kod rabatowy na zakupy",
+        normalized_body="Twoj kod rabatowy czeka. Wypisz sie z newslettera, jesli nie chcesz kolejnych wiadomosci.",
+    )
+
+    decision = evaluate_rules(parsed, make_mailbox())
+
+    assert decision.action == "skip_ai"
+    assert decision.category == "newsletter"
+
+
+def test_rule_engine_catches_marketing_audit_offer_without_llm() -> None:
+    parsed = ParsedEmail(
+        sender="Growth Lab <kontakt@growth-lab.test>",
+        subject="Darmowy audyt SEO i Google Ads dla salonu",
+        normalized_body="Przygotowalismy bezplatny audyt marketingowy, ktory pomoze zwiekszyc ruch i pozyskac wiecej klientow.",
+    )
+
+    decision = evaluate_rules(parsed, make_mailbox())
+
+    assert decision.action == "skip_ai"
+    assert decision.category == "offer"
+
+
+def test_rule_engine_catches_newsletter_unsubscribe_pattern_without_llm() -> None:
+    parsed = ParsedEmail(
+        sender="Beauty Platform <hello@beauty-platform.test>",
+        subject="Nowa propozycja wspolpracy dla Twojego salonu",
+        normalized_body="Jesli nie chcesz otrzymywac takich wiadomosci, kliknij wypisz. Oferujemy wsparcie social media i kampanie reklamowe.",
+    )
+
+    decision = evaluate_rules(parsed, make_mailbox())
+
+    assert decision.action == "skip_ai"
+    assert decision.category == "offer"
+
+
+def test_rule_engine_catches_obvious_spam_without_llm() -> None:
+    parsed = ParsedEmail(
+        sender="Prize Center <promo@spam.test>",
+        subject="Claim your prize now",
+        normalized_body="Act now to claim your prize and get a quick loan approved today.",
+    )
+
+    decision = evaluate_rules(parsed, make_mailbox())
+
+    assert decision.action == "skip_ai"
+    assert decision.category == "spam"
+
+
+def test_rule_engine_prioritizes_spam_over_newsletter_markers() -> None:
+    parsed = ParsedEmail(
+        sender="Prize Center <promo@spam.test>",
+        subject="Unsubscribe and claim your prize",
+        normalized_body="Act now, claim your prize, verify your account and unsubscribe here.",
+    )
+
+    decision = evaluate_rules(parsed, make_mailbox())
+
+    assert decision.action == "skip_ai"
+    assert decision.category == "spam"
+
+
+def test_rule_engine_keeps_customer_promo_question_for_llm() -> None:
+    parsed = ParsedEmail(
+        sender="Klientka <klientka@example.com>",
+        subject="Pytanie o promocje na manicure",
+        normalized_body="Dzien dobry, czy macie teraz jakas promocje na manicure hybrydowy dla nowych klientek?",
+    )
+
+    decision = evaluate_rules(parsed, make_mailbox())
+
+    assert decision.action == "needs_llm"
 
 
 def test_category_to_folder_unknown_returns_source_folder():

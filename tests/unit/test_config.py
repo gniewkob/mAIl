@@ -41,6 +41,9 @@ def test_settings_load_mailboxes_from_manifest(tmp_path: Path) -> None:
                     {
                         "imap_user": "shop@example.com",
                         "imap_pass": "secret-b",
+                        "imap_spam_folder": "Junk.Custom",
+                        "imap_newsletter_folder": "INBOX.Custom-Newsletter",
+                        "imap_offer_folder": "INBOX.Custom-Offer",
                         "imap_other_folder": "INBOX.Custom-Other",
                     },
                 ]
@@ -51,6 +54,9 @@ def test_settings_load_mailboxes_from_manifest(tmp_path: Path) -> None:
     settings = Settings(
         IMAP_HOST="imap.example.com",
         MAILBOXES_CONFIG_PATH=manifest,
+        IMAP_SPAM_FOLDER="Junk",
+        IMAP_NEWSLETTER_FOLDER="INBOX.Newsletter",
+        IMAP_OFFER_FOLDER="INBOX.Offer",
         IMAP_OTHER_FOLDER="INBOX.Other",
     )
 
@@ -58,6 +64,9 @@ def test_settings_load_mailboxes_from_manifest(tmp_path: Path) -> None:
 
     assert [mailbox.mailbox_id for mailbox in mailboxes] == ["kontakt", "shop_example_com"]
     assert mailboxes[0].imap_source_folder == "INBOX.Test-AI-Review"
+    assert mailboxes[1].imap_spam_folder == "Junk.Custom"
+    assert mailboxes[1].imap_newsletter_folder == "INBOX.Custom-Newsletter"
+    assert mailboxes[1].imap_offer_folder == "INBOX.Custom-Offer"
     assert mailboxes[1].imap_other_folder == "INBOX.Custom-Other"
     assert mailboxes[1].imap_host == "imap.example.com"
     assert mailboxes[1].imap_max_retries == 3
@@ -179,7 +188,23 @@ def test_settings_rejects_null_plaintext_secret(tmp_path: Path) -> None:
 
 @pytest.mark.parametrize(
     "criterion",
-    ["ALL", "UNSEEN", "UNANSWERED", "FLAGGED", "UNSEEN UNANSWERED", "UNSEEN FLAGGED"],
+    [
+        "ALL",
+        "SEEN",
+        "UNSEEN",
+        "ANSWERED",
+        "UNANSWERED",
+        "FLAGGED",
+        "UNFLAGGED",
+        "RECENT",
+        "OLD",
+        "DRAFT",
+        "UNDRAFT",
+        "UNSEEN UNANSWERED",
+        "UNSEEN FLAGGED",
+        "UNSEEN UNFLAGGED",
+        "UNSEEN OLD",
+    ],
 )
 def test_supported_imap_search_criteria_are_accepted(criterion: str) -> None:
     settings = Settings(

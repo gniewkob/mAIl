@@ -46,7 +46,7 @@ def main() -> None:
 
     failed_uids: list[str] = []
     with IMAPClient(mailbox) as imap:
-        imap.validate_routing_setup(
+        imap.validate_runtime_setup(
             source_folder=mailbox.imap_source_folder,
             target_folders=[],
             dry_run=False,

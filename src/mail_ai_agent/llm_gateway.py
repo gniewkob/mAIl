@@ -8,14 +8,15 @@ from typing import Any
 
 import requests  # type: ignore[import-untyped]
 
-LOGGER = logging.getLogger(__name__)
-
+from .circuit_breaker import CircuitBreaker, CircuitBreakerOpenError
 from .config import Settings
+from .schemas import LLMClassification, ParsedEmail
+
+LOGGER = logging.getLogger(__name__)
 
 
 def _escape_format_braces(s: str) -> str:
     return s.replace("{", "{{").replace("}", "}}")
-from .schemas import LLMClassification, ParsedEmail
 
 PROMPT_TEMPLATE = """Jesteś systemem klasyfikacji poczty dla firmy usługowej. Analizujesz pojedynczą wiadomość e-mail i zwracasz wyłącznie poprawny JSON.
 
@@ -25,15 +26,19 @@ Zasady:
 3. Nie zgadujesz faktów, których nie ma w wiadomości.
 4. Jeśli wiadomość jest niejednoznaczna, obniż confidence.
 5. Nie opieraj klasyfikacji na podpisie, disclaimerze ani starej części cytowanego wątku.
-6. Jeśli wiadomość wygląda na spam, ofertę handlową lub cold outreach, ustaw kategorię "spam_or_offer".
-7. Draft reply twórz tylko wtedy, gdy wiadomość wymaga odpowiedzi i masz wysoką pewność.
-8. Jeśli nie jesteś pewien, ustaw draft_reply na null.
-9. Podsumowanie ma być krótkie, konkretne i po polsku.
-10. reasoning_short ma mieć jedno zdanie.
-11. Zacznij odpowiedź bezpośrednio od otwierającego nawiasu klamrowego JSON — bez wstępu, bez cytowania treści wiadomości.
+6. Jeśli wiadomość wygląda na typowy spam, scam, phishing, śmieciową lub podejrzaną wiadomość, ustaw kategorię "spam" nawet jeśli zawiera link wypisu lub język promocyjny.
+7. Jeśli wiadomość wygląda na masowy newsletter sklepu, mailing subskrypcyjny, premierę kolekcji, kod rabatowy lub retail promocję do konsumenta, ustaw kategorię "newsletter".
+8. Jeśli wiadomość wygląda na ofertę handlową, cold outreach, propozycję współpracy B2B, SEO, Ads, lead generation lub outreach agencji, ustaw kategorię "offer".
+9. Nie klasyfikuj newslettera sklepu ani promocji detalicznej jako "offer".
+10. Nie klasyfikuj spamu/scamu jako "newsletter" tylko dlatego, że zawiera unsubscribe lub treść promocyjną.
+11. Draft reply twórz tylko wtedy, gdy wiadomość wymaga odpowiedzi i masz wysoką pewność.
+12. Jeśli nie jesteś pewien, ustaw draft_reply na null.
+13. Podsumowanie ma być krótkie, konkretne i po polsku.
+14. reasoning_short ma mieć jedno zdanie.
+15. Zacznij odpowiedź bezpośrednio od otwierającego nawiasu klamrowego JSON — bez wstępu, bez cytowania treści wiadomości.
 
 Dozwolone wartości:
-- category: appointment, question, complaint, spam_or_offer, billing, system, other
+- category: appointment, question, complaint, spam, newsletter, offer, billing, system, other
 - priority: high, medium, low
 
 Wymagane pola JSON:
@@ -60,6 +65,12 @@ Treść:
 class LLMGateway:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
+        self._circuit_breaker = CircuitBreaker(
+            name="ollama_llm",
+            failure_threshold=settings.ollama_circuit_breaker_failures,
+            timeout_seconds=settings.ollama_circuit_breaker_timeout_seconds,
+            expected_exception=(requests.RequestException, ValueError),
+        )
 
     def classify(self, parsed_email: ParsedEmail) -> tuple[LLMClassification, int]:
         prompt = PROMPT_TEMPLATE.format(
@@ -69,33 +80,49 @@ class LLMGateway:
             has_attachments=parsed_email.has_attachments,
             body=_escape_format_braces(parsed_email.normalized_body),
         )
-        last_error: Exception | None = None
-        for attempt in range(1, self.settings.max_retries + 1):
+        
+        # Check circuit breaker first for fast failure
+        if self._circuit_breaker.state.value == "open":
+            raise CircuitBreakerOpenError(
+                f"LLM circuit breaker is OPEN. Ollama appears to be down. "
+                f"Will retry in {self.settings.ollama_circuit_breaker_timeout_seconds}s."
+            )
+        
+        def _do_classify() -> tuple[LLMClassification, int]:
             started = time.perf_counter()
             raw_output: str = ""
-            try:
-                response = requests.post(
-                    f"{self.settings.ollama_url}/api/generate",
-                    json=_build_generate_payload(
-                        model=self.settings.ollama_model,
-                        prompt=prompt,
-                        temperature=self.settings.ollama_temperature,
-                    ),
-                    timeout=self.settings.ollama_timeout_seconds,
-                )
-                response.raise_for_status()
-                payload = response.json()
-                raw_output = payload.get("response", "")
-                classification = LLMClassification.model_validate(_normalize_classification_payload(raw_output))
-                latency_ms = int((time.perf_counter() - started) * 1000)
-                return classification, latency_ms
-            except (requests.RequestException, ValueError) as exc:
-                last_error = exc
-                LOGGER.debug("LLM raw output on failure (attempt %d): %s", attempt, raw_output)
-                if attempt < self.settings.max_retries:
-                    time.sleep(min(0.5 * attempt, 5.0))
-                continue
-        raise RuntimeError(f"LLM classification failed after retries: {last_error}") from last_error
+            last_error: Exception | None = None
+            
+            for attempt in range(1, self.settings.max_retries + 1):
+                try:
+                    response = requests.post(
+                        f"{self.settings.ollama_url}/api/generate",
+                        json=_build_generate_payload(
+                            model=self.settings.ollama_model,
+                            prompt=prompt,
+                            temperature=self.settings.ollama_temperature,
+                        ),
+                        timeout=self.settings.ollama_timeout_seconds,
+                    )
+                    response.raise_for_status()
+                    payload = response.json()
+                    raw_output = payload.get("response", "")
+                    classification = LLMClassification.model_validate(_normalize_classification_payload(raw_output))
+                    latency_ms = int((time.perf_counter() - started) * 1000)
+                    return classification, latency_ms
+                except (requests.RequestException, ValueError) as exc:
+                    last_error = exc
+                    LOGGER.debug("LLM raw output on failure (attempt %d): %s", attempt, raw_output)
+                    if attempt < self.settings.max_retries:
+                        time.sleep(min(0.5 * attempt, 5.0))
+                    continue
+            raise RuntimeError(f"LLM classification failed after retries: {last_error}") from last_error
+        
+        try:
+            return self._circuit_breaker.call(_do_classify)
+        except CircuitBreakerOpenError:
+            # Circuit breaker errors should be propagated as-is for proper handling
+            raise
 
 
 def _build_generate_payload(*, model: str, prompt: str, temperature: float) -> dict[str, Any]:

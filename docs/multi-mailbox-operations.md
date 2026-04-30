@@ -7,12 +7,9 @@ This runbook is for the multi-mailbox worker using:
 - [`config/mailboxes.active.json`](/Users/gniewkob/Repos/priv/mAIl/config/mailboxes.active.json)
 - [`.env.multi.prod`](/Users/gniewkob/Repos/priv/mAIl/.env.multi.prod)
 
-Current mode on 2026-03-29:
+Current mode:
 
 - production worker is active
-- test folders were cleaned after rollout validation
-- archive copies of earlier prod-test artifacts are in `logs/archive/` and `data/archive/`
-- local full suite is currently `96 passed, 2 skipped`
 - Prometheus exporter is active on `127.0.0.1:9177`
 - Grafana dashboard `mAiL Overview` is the preferred operator view
 
@@ -57,9 +54,14 @@ Metrics preview:
 
 Grafana quick checks:
 
-- top row should show `healthy`, `processed`, `failed`, `cleanup_pending`, and `uncertain`
-- `failed`, `cleanup_pending`, and `uncertain` should normally stay at `0`
-- `rule_share` is a tuning metric, not an outage signal
+- top row should show `Operational Health`, `Success Ratio (Current Totals)`, `Processed`, `Failed`, `Cleanup Pending`, and `Uncertain`
+- `failed` and `cleanup_pending` should normally stay at `0`
+- `uncertain` should stay low and concentrated only in genuinely ambiguous mail; repeated growth on one mailbox means policy or prompt tuning is needed
+- `Category Breakdown` should distinguish `spam`, `newsletter`, `offer`, `other`, and `parse_error`
+- `Parse Errors (Total)` should normally stay at `0`
+- `Current Uncertain by Mailbox` should identify the mailbox that needs quality tuning
+- `Current Failed by Mailbox` may show `No data` when current failed state is `0`
+- `Quality Suggestions` shows how many current proposals exist in each class: `rule_engine`, `prompt`, `parser`, `ops`
 - if Grafana looks wrong, verify the raw metrics path first:
 
 ```bash
@@ -67,6 +69,30 @@ curl -sS http://127.0.0.1:9177/metrics | sed -n '1,80p'
 curl -sS 'http://127.0.0.1:9090/api/v1/query?query=mailai_health_ok'
 curl -sS http://127.0.0.1:9090/api/v1/targets
 ```
+
+## Dashboard v2 (recommended)
+
+Import dashboard JSON:
+
+- [grafana-mailai-overview-v2.json](/Users/gniewkob/Repos/priv/mAIl/dashboards/grafana-mailai-overview-v2.json)
+
+Panels to watch first:
+
+- `Operational Health`: single SRE status for fast triage
+- `Current Uncertain / Failed / Cleanup Pending`: immediate backlog
+- `State Timeline`: health trend
+- `Event Outcomes`: rule vs LLM routing and failures
+- `Category Distribution`: drift signal (`other`, `offer`, `newsletter`, `spam`)
+- `Mailbox Hotspots (Current)`: where to fix first
+- `Action Breakdown (Instant)`: operational mix
+- `Autotune Proposals (Instant)`: weekly improvement priorities
+
+Daily operator flow:
+
+1. Check `Operational Health`.
+2. If backlog tiles are non-zero, inspect `Mailbox Hotspots (Current)`.
+3. Check `Event Outcomes` and `Category Distribution` for regressions.
+4. Use `Autotune Proposals` and weekly autotune output before manual rule edits.
 
 ## One-hour production check
 
@@ -93,7 +119,7 @@ tail -n 20 logs/multi-prod-audit.jsonl
 
 - `skip_already_done` on repeated scans of already-processed messages
 - only some mailboxes having candidates on a given run
-- transactional mail mostly ending as `other`, `billing`, or `spam_or_offer`
+- transactional mail mostly ending as `other`, `billing`, `newsletter`, or `offer`
 - zero candidates in the first hour after cutover
 
 ## What requires action
@@ -132,8 +158,57 @@ When reviewing the next observation window, verify this fix first.
 ## Uncertain messages
 
 1. Review them manually in audit or CSV.
-2. If the pattern repeats, improve `rule_engine` or prompt.
-3. Keep them on test folders until the pattern is stable.
+2. If the pattern is mostly low-signal `other`, lower-risk automation is preferred over human backlog.
+3. The current policy already routes `other` with moderate confidence directly to `INBOX.Other`; keep `uncertain` for low-confidence or operational failures.
+4. If the pattern repeats, improve `rule_engine` or prompt.
+
+Safe replay without deleting originals:
+
+```bash
+.venv/bin/python -m mail_ai_agent.historical_backfill_cli \
+  --env-file .env.multi.prod \
+  --apply \
+  --keep-source \
+  --force-reprocess \
+  --folders INBOX.AI-Uncertain
+```
+
+## Quality-learning patch workflow
+
+Generated `rule_engine` proposals stay read-only until explicitly accepted.
+
+1. Generate the latest report and proposal patch:
+
+```bash
+.venv/bin/python -m mail_ai_agent.quality_learning_cli \
+  --state-db data/multi-prod-state.sqlite \
+  --audit-log logs/multi-prod-audit.jsonl \
+  --output-dir logs/quality-learning
+```
+
+2. Validate the patch without changing code:
+
+```bash
+.venv/bin/python -m mail_ai_agent.apply_quality_patch_cli \
+  --patch logs/quality-learning/quality-learning-YYYYMMDDTHHMMSSZ-proposal-1.patch \
+  --check
+```
+
+3. Apply only after review:
+
+```bash
+.venv/bin/python -m mail_ai_agent.apply_quality_patch_cli \
+  --patch logs/quality-learning/quality-learning-YYYYMMDDTHHMMSSZ-proposal-1.patch \
+  --apply
+```
+
+Operational guarantees:
+
+- `--check` runs a dry-run patch validation only
+- `--apply` creates a timestamped backup of the target file
+- `--apply` runs focused tests for `rule_engine` and `quality_learning`
+- failed validation restores the backup automatically
+- the result is logged to `logs/quality-learning/quality-patch-*.json`
 
 ## Cleanup
 
@@ -163,9 +238,9 @@ For source-folder cleanup:
   --apply
 ```
 
-## Next development stage
+## Ongoing improvement loop
 
-The next planned phase is quality iteration driven by production evidence.
+Use production evidence to drive small, reversible quality changes.
 
 Current recommended order:
 
@@ -177,7 +252,7 @@ Current recommended order:
 
 ## Adding the last mailbox later
 
-When `larysa@bodora.pl` password is available:
+When credentials for `larysa@bodora.pl` are available:
 
 1. update [`config/mailboxes.json`](/Users/gniewkob/Repos/priv/mAIl/config/mailboxes.json)
 2. regenerate [`config/mailboxes.active.json`](/Users/gniewkob/Repos/priv/mAIl/config/mailboxes.active.json)

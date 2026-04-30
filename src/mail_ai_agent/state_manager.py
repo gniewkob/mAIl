@@ -6,10 +6,9 @@ from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+from .constants import ActionTaken, MOVE_CLEANUP_PENDING_ACTION
 from .schemas import EmailRecord, LeaseAcquireResult, WorkerLockResult, WorkflowStatus
 from .utils import _chmod_owner_only, _hash_value
-
-MOVE_CLEANUP_PENDING_ACTION = "move_copy_succeeded_cleanup_pending"
 
 
 class StateManager:
@@ -21,7 +20,8 @@ class StateManager:
         _chmod_owner_only(self.db_path)
 
     def _connect(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(self.db_path)
+        # 30 second timeout to prevent indefinite hangs
+        connection = sqlite3.connect(self.db_path, timeout=30.0)
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA journal_mode=WAL")
         connection.execute("PRAGMA busy_timeout=5000")
@@ -180,7 +180,8 @@ class StateManager:
             identity_rows = self._lookup_identity_rows(conn, mailbox_id, message_id, fingerprint, content_fingerprint)
             if self._is_identity_conflict(identity_rows):
                 row = next((row for row in identity_rows if row is not None), None)
-                assert row is not None
+                if row is None:
+                    raise RuntimeError("Identity conflict detected but no matching row found")
                 return LeaseAcquireResult(
                     outcome="conflict",
                     record=self._row_to_record(row),
@@ -363,7 +364,7 @@ class StateManager:
             confidence=None,
             target_folder=None,
             target_uid=None,
-            action_taken="failed",
+            action_taken=ActionTaken.FAILED,
             draft_path=None,
             error_message=error_message,
             last_error_type=error_type,
@@ -426,6 +427,28 @@ class StateManager:
             ).fetchone()
         return self._row_to_record(row) if row else None
 
+    def get_identity_matches(
+        self,
+        *,
+        mailbox_id: str,
+        message_id: str | None,
+        fingerprint: str,
+        content_fingerprint: str | None = None,
+    ) -> list[EmailRecord]:
+        with self._managed_connection() as conn:
+            rows = self._lookup_identity_rows(conn, mailbox_id, message_id, fingerprint, content_fingerprint)
+        records: list[EmailRecord] = []
+        seen_ids: set[int] = set()
+        for row in rows:
+            if row is None:
+                continue
+            row_id = int(row["id"])
+            if row_id in seen_ids:
+                continue
+            seen_ids.add(row_id)
+            records.append(self._row_to_record(row))
+        return records
+
     def list_cleanup_candidates(self, *, mailbox_id: str, source_folder: str) -> list[EmailRecord]:
         with self._managed_connection() as conn:
             rows = conn.execute(
@@ -464,13 +487,72 @@ class StateManager:
         with self._managed_connection() as conn:
             conn.execute("DELETE FROM email_processing_state WHERE id = ?", (record_id,))
 
+    def delete_identity_matches(
+        self,
+        *,
+        mailbox_id: str,
+        message_id: str | None,
+        fingerprint: str,
+        content_fingerprint: str | None = None,
+    ) -> int:
+        matches = self.get_identity_matches(
+            mailbox_id=mailbox_id,
+            message_id=message_id,
+            fingerprint=fingerprint,
+            content_fingerprint=content_fingerprint,
+        )
+        if not matches:
+            return 0
+        with self._managed_connection() as conn:
+            conn.executemany(
+                "DELETE FROM email_processing_state WHERE id = ?",
+                [(record.id,) for record in matches],
+            )
+        return len(matches)
+
+    def acquire_cleanup_lock(self, record_id: int, worker_id: str) -> bool:
+        """Atomically acquire lock for cleanup processing. Returns True if lock acquired."""
+        now = datetime.now(timezone.utc)
+        with self._managed_connection() as conn:
+            conn.execute("BEGIN EXCLUSIVE")
+            # Check if still in cleanup_pending and not locked by another worker
+            row = conn.execute(
+                """
+                SELECT status, lock_owner, lock_expires_at 
+                FROM email_processing_state 
+                WHERE id = ?
+                """,
+                (record_id,),
+            ).fetchone()
+            if not row:
+                return False
+            if row["status"] != WorkflowStatus.CLEANUP_PENDING.value:
+                return False
+            if row["lock_owner"] and row["lock_owner"] != worker_id:
+                # Check if lock expired
+                expires = row["lock_expires_at"]
+                if expires and datetime.fromisoformat(expires) > now:
+                    return False
+            # Acquire lock
+            expires_at = now + timedelta(seconds=300)  # 5 min timeout for cleanup
+            conn.execute(
+                """
+                UPDATE email_processing_state
+                SET lock_owner = ?, lock_expires_at = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (worker_id, expires_at.isoformat(), now.isoformat(), record_id),
+            )
+            return True
+
     def mark_cleanup_done(self, record_id: int) -> None:
         now = datetime.now(timezone.utc).isoformat()
         with self._managed_connection() as conn:
             conn.execute(
                 """
                 UPDATE email_processing_state
-                SET status = ?, action_taken = ?, error_message = NULL, last_error_at = NULL, last_error_type = NULL, updated_at = ?
+                SET status = ?, action_taken = ?, error_message = NULL, last_error_at = NULL, 
+                    last_error_type = NULL, lock_owner = NULL, lock_expires_at = NULL, updated_at = ?
                 WHERE id = ?
                 """,
                 (WorkflowStatus.PROCESSED.value, "cleanup_source", now, record_id),

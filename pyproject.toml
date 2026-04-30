@@ -22,9 +22,16 @@ dev = [
 ]
 
 [project.scripts]
+mail-ai-apply-quality-patch = "mail_ai_agent.apply_quality_patch_cli:main"
 mail-ai-admin-mailbox = "mail_ai_agent.admin_mailbox_cli:main"
 mail-ai-admin-notify = "mail_ai_agent.admin_notify_cli:main"
 mail-ai-historical-backfill = "mail_ai_agent.historical_backfill_cli:main"
+mail-ai-migrate-audit-log = "mail_ai_agent.migrate_audit_log_cli:main"
+mail-ai-provision-folders = "mail_ai_agent.provision_folders_cli:main"
+mail-ai-quality-learning = "mail_ai_agent.quality_learning_cli:main"
+mail-ai-sieve-unify = "mail_ai_agent.sieve_unify_cli:main"
+mail-ai-sieve-deploy = "mail_ai_agent.sieve_deploy_cli:main"
+mail-ai-weekly-autotune = "mail_ai_agent.weekly_autotune_cli:main"
 
 [tool.setuptools]
 package-dir = {"" = "src"}

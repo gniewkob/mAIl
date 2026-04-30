@@ -8,6 +8,7 @@ from typing import Any
 from .audit_logger import AuditLogger
 from .config import MailboxConfig, Settings
 from .imap_client import IMAPClient
+from .constants import ActionTaken
 from .schemas import WorkflowStatus
 from .state_manager import StateManager
 
@@ -95,7 +96,7 @@ def run_requeue_uncertain(
                         status_after="requeued_for_processing",
                         category=record.category,
                         confidence=record.confidence,
-                        action_taken="admin_requeue_uncertain",
+                        action_taken=ActionTaken.ADMIN_REQUEUE_UNCERTAIN,
                         target_folder=record.source_folder,
                         target_uid=new_source_uid,
                         error=None,
@@ -136,7 +137,7 @@ def run_delete_imap_message(
         status_after="deleted_by_admin",
         category=None,
         confidence=None,
-        action_taken="admin_delete_message",
+        action_taken=ActionTaken.ADMIN_DELETE_MESSAGE,
         target_folder=None,
         target_uid=None,
         error=None,

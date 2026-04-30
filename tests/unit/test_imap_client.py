@@ -25,6 +25,7 @@ class FakeFlakyConnection:
         self.search_attempts = 0
         self.search_args: tuple | None = None
         self.fetch_args: list[tuple] = []
+        self.create_calls: list[str] = []
         self.store_calls: list[tuple] = []
         self.expunge_calls = 0
         self.capabilities = {b"IMAP4REV1", b"UIDPLUS"}
@@ -32,6 +33,8 @@ class FakeFlakyConnection:
             "UIDVALIDITY": ("UIDVALIDITY", [b"999"]),
             "COPYUID": ("COPYUID", [b"999 42 142"]),
         }
+        self.list_data = [b'(\\HasNoChildren) "/" "INBOX.AI-Review"', b'(\\HasNoChildren) "/" "INBOX.Questions"']
+        self.list_calls = 0
 
     def login(self, user: str, password: str) -> tuple[str, list[bytes]]:
         return ("OK", [b"logged-in"])
@@ -41,6 +44,14 @@ class FakeFlakyConnection:
 
     def select(self, folder: str, readonly: bool = False) -> tuple[str, list[bytes]]:
         return ("OK", [b"1"])
+
+    def create(self, folder: str) -> tuple[str, list[bytes]]:
+        self.create_calls.append(folder)
+        return ("OK", [b"created"])
+
+    def list(self) -> tuple[str, list[bytes]]:
+        self.list_calls += 1
+        return ("OK", self.list_data)
 
     def response(self, code: str) -> tuple[str, list[bytes]] | None:
         return self.responses.get(code)
@@ -212,7 +223,7 @@ def test_get_uidvalidity_reads_folder_metadata(monkeypatch) -> None:
     assert uidvalidity == "999"
 
 
-def test_validate_routing_setup_requires_uidplus_or_explicit_override(monkeypatch) -> None:
+def test_validate_runtime_setup_requires_uidplus_or_explicit_override(monkeypatch) -> None:
     mailbox = make_mailbox()
     connection = FakeFlakyConnection()
     connection.capabilities = {b"IMAP4REV1"}
@@ -222,7 +233,7 @@ def test_validate_routing_setup_requires_uidplus_or_explicit_override(monkeypatc
 
     with IMAPClient(mailbox) as client:
         try:
-            client.validate_routing_setup(
+            client.validate_runtime_setup(
                 source_folder="INBOX.AI-Review",
                 target_folders=["INBOX.Questions"],
                 dry_run=False,
@@ -231,6 +242,83 @@ def test_validate_routing_setup_requires_uidplus_or_explicit_override(monkeypatc
             assert "UIDPLUS" in str(exc)
         else:
             raise AssertionError("Expected RuntimeError")
+
+
+def test_validate_runtime_setup_checks_target_existence_without_rw_select(monkeypatch) -> None:
+    mailbox = make_mailbox()
+    connection = FakeFlakyConnection()
+    selected: list[tuple[str, bool]] = []
+
+    def tracking_select(folder: str, readonly: bool = False) -> tuple[str, list[bytes]]:
+        selected.append((folder, readonly))
+        return ("OK", [b"1"])
+
+    connection.select = tracking_select
+    monkeypatch.setattr("mail_ai_agent.imap_client.imaplib.IMAP4_SSL", lambda *_, **__: connection)
+    monkeypatch.setattr("mail_ai_agent.imap_client.time.sleep", lambda _: None)
+
+    with IMAPClient(mailbox) as client:
+        client.validate_runtime_setup(
+            source_folder="INBOX.AI-Review",
+            target_folders=["INBOX.Questions"],
+            dry_run=True,
+        )
+
+    assert selected == [("INBOX.AI-Review", True)]
+
+
+def test_validate_preflight_setup_still_checks_target_rw_access(monkeypatch) -> None:
+    mailbox = make_mailbox()
+    connection = FakeFlakyConnection()
+    selected: list[tuple[str, bool]] = []
+
+    def tracking_select(folder: str, readonly: bool = False) -> tuple[str, list[bytes]]:
+        selected.append((folder, readonly))
+        return ("OK", [b"1"])
+
+    connection.select = tracking_select
+    monkeypatch.setattr("mail_ai_agent.imap_client.imaplib.IMAP4_SSL", lambda *_, **__: connection)
+    monkeypatch.setattr("mail_ai_agent.imap_client.time.sleep", lambda _: None)
+
+    with IMAPClient(mailbox) as client:
+        client.validate_preflight_setup(
+            source_folder="INBOX.AI-Review",
+            target_folders=["INBOX.Questions"],
+            dry_run=True,
+        )
+
+    assert selected == [("INBOX.AI-Review", True), ("INBOX.Questions", False)]
+
+
+def test_list_folders_uses_instance_cache(monkeypatch) -> None:
+    mailbox = make_mailbox()
+    connection = FakeFlakyConnection()
+
+    monkeypatch.setattr("mail_ai_agent.imap_client.imaplib.IMAP4_SSL", lambda *_, **__: connection)
+    monkeypatch.setattr("mail_ai_agent.imap_client.time.sleep", lambda _: None)
+
+    with IMAPClient(mailbox) as client:
+        folders_first = client.list_folders()
+        folders_second = client.list_folders()
+
+    assert folders_first == folders_second
+    assert connection.list_calls == 1
+
+
+def test_create_folder_updates_folder_cache(monkeypatch) -> None:
+    mailbox = make_mailbox()
+    connection = FakeFlakyConnection()
+
+    monkeypatch.setattr("mail_ai_agent.imap_client.imaplib.IMAP4_SSL", lambda *_, **__: connection)
+    monkeypatch.setattr("mail_ai_agent.imap_client.time.sleep", lambda _: None)
+
+    with IMAPClient(mailbox) as client:
+        client.list_folders()
+        client.create_folder("INBOX.New")
+        folders = client.list_folders()
+
+    assert "INBOX.New" in folders
+    assert connection.list_calls == 1
 
 
 def test_delete_message_uses_uid_expunge_when_supported(monkeypatch) -> None:
@@ -341,6 +429,19 @@ def test_copy_message_returns_target_uid_from_copyuid(monkeypatch) -> None:
     assert target_uid == "142"
 
 
+def test_create_folder_calls_imap_create(monkeypatch) -> None:
+    mailbox = make_mailbox()
+    connection = FakeFlakyConnection()
+
+    monkeypatch.setattr("mail_ai_agent.imap_client.imaplib.IMAP4_SSL", lambda *_, **__: connection)
+    monkeypatch.setattr("mail_ai_agent.imap_client.time.sleep", lambda _: None)
+
+    with IMAPClient(mailbox) as client:
+        client.create_folder("INBOX.Offer")
+
+    assert connection.create_calls == ["INBOX.Offer"]
+
+
 def test_fetch_candidates_limit_zero_includes_all_uids():
     """When imap_fetch_limit=0, all UIDs from SEARCH are included (no limit applied)."""
     from unittest.mock import MagicMock
@@ -433,8 +534,8 @@ def test_imap4_ssl_receives_ssl_context(monkeypatch) -> None:
     import ssl as _ssl
     captured: list[dict] = []
 
-    def fake_ssl(host: str, port: int, *, ssl_context=None) -> FakeFlakyConnection:
-        captured.append({"ssl_context": ssl_context})
+    def fake_ssl(host: str, port: int, *, ssl_context=None, timeout=None) -> FakeFlakyConnection:
+        captured.append({"ssl_context": ssl_context, "timeout": timeout})
         return FakeFlakyConnection()
 
     monkeypatch.setattr("mail_ai_agent.imap_client.imaplib.IMAP4_SSL", fake_ssl)

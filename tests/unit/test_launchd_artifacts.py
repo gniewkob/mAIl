@@ -11,6 +11,7 @@ def test_launchd_artifacts_use_mailai_standard_names() -> None:
         "com.mailai.multi.test.plist",
         "com.mailai.multi.prod.plist",
         "com.mailai.metrics.prod.plist",
+        "com.mailai.learning.prod.plist",
     ]
     for filename in expected:
         assert Path(filename).exists(), filename
