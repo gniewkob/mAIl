@@ -4,12 +4,26 @@ import json
 import os
 import re
 import subprocess
+from functools import lru_cache
 from pathlib import Path
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 from pydantic import SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+def _validate_safe_path(path: Path | None, field_name: str) -> None:
+    """Validate that path is safe (no path traversal to parent dirs)."""
+    if path is None:
+        return
+    path_str = str(path)
+    # Reject paths with parent directory traversal that escapes root
+    normalized = os.path.normpath(path_str)
+    if ".." in normalized.split(os.sep):
+        raise ValueError(f"{field_name} contains path traversal (..): {path}")
+    # Note: Absolute paths are allowed within home/temp for tests
+    # Production deployment should use relative paths or container paths
 
 
 def _default_mailbox_id(imap_user: str) -> str:
@@ -21,15 +35,29 @@ def _normalize_imap_search_criterion(value: str) -> str:
     normalized = " ".join(value.strip().upper().split())
     allowed = {
         "ALL",
+        "SEEN",
         "UNSEEN",
+        "ANSWERED",
         "UNANSWERED",
         "FLAGGED",
+        "UNFLAGGED",
+        "RECENT",
+        "OLD",
+        "DRAFT",
+        "UNDRAFT",
         "UNSEEN UNANSWERED",
         "UNSEEN FLAGGED",
+        "UNSEEN UNFLAGGED",
+        "UNSEEN OLD",
     }
     if normalized not in allowed:
         raise ValueError(f"Unsupported IMAP_SEARCH_CRITERION: {value}")
     return normalized
+
+
+@lru_cache(maxsize=32)
+def get_imap_search_tokens(criterion: str) -> tuple[str, ...]:
+    return tuple(_normalize_imap_search_criterion(criterion).split())
 
 
 class MailboxConfig(BaseModel):
@@ -40,6 +68,7 @@ class MailboxConfig(BaseModel):
     imap_pass: SecretStr
     imap_max_retries: int = 3
     imap_retry_backoff_seconds: float = 0.5
+    imap_timeout_seconds: int = 30
     imap_search_criterion: str = "ALL"
     imap_fetch_limit: int = 100
     imap_allow_folder_expunge: bool = False
@@ -49,6 +78,9 @@ class MailboxConfig(BaseModel):
     imap_appointments_folder: str = "INBOX.Appointments"
     imap_questions_folder: str = "INBOX.Questions"
     imap_complaints_folder: str = "INBOX.Complaints"
+    imap_spam_folder: str = "Junk"
+    imap_newsletter_folder: str = "INBOX.Newsletter"
+    imap_offer_folder: str = "INBOX.Offer"
     imap_other_folder: str = "INBOX.Other"
     imap_billing_folder: str = "INBOX.Billing"
     imap_system_folder: str = "INBOX.System"
@@ -72,6 +104,7 @@ class MailboxConfig(BaseModel):
             imap_pass=settings.imap_pass,
             imap_max_retries=settings.imap_max_retries,
             imap_retry_backoff_seconds=settings.imap_retry_backoff_seconds,
+            imap_timeout_seconds=settings.imap_timeout_seconds,
             imap_search_criterion=settings.imap_search_criterion,
             imap_fetch_limit=settings.imap_fetch_limit,
             imap_allow_folder_expunge=settings.imap_allow_folder_expunge,
@@ -80,6 +113,9 @@ class MailboxConfig(BaseModel):
             imap_appointments_folder=settings.imap_appointments_folder,
             imap_questions_folder=settings.imap_questions_folder,
             imap_complaints_folder=settings.imap_complaints_folder,
+            imap_spam_folder=settings.imap_spam_folder,
+            imap_newsletter_folder=settings.imap_newsletter_folder,
+            imap_offer_folder=settings.imap_offer_folder,
             imap_other_folder=settings.imap_other_folder,
             imap_billing_folder=settings.imap_billing_folder,
             imap_system_folder=settings.imap_system_folder,
@@ -100,6 +136,7 @@ class Settings(BaseSettings):
     imap_pass: SecretStr | None = Field(default=None, alias="IMAP_PASS")
     imap_max_retries: int = Field(default=3, alias="IMAP_MAX_RETRIES")
     imap_retry_backoff_seconds: float = Field(default=0.5, alias="IMAP_RETRY_BACKOFF_SECONDS")
+    imap_timeout_seconds: int = Field(default=30, alias="IMAP_TIMEOUT_SECONDS")
     imap_search_criterion: str = Field(default="ALL", alias="IMAP_SEARCH_CRITERION")
     imap_fetch_limit: int = Field(default=100, alias="IMAP_FETCH_LIMIT")
     imap_allow_folder_expunge: bool = Field(default=False, alias="IMAP_ALLOW_FOLDER_EXPUNGE")
@@ -109,6 +146,9 @@ class Settings(BaseSettings):
     imap_appointments_folder: str = Field(default="INBOX.Appointments", alias="IMAP_APPOINTMENTS_FOLDER")
     imap_questions_folder: str = Field(default="INBOX.Questions", alias="IMAP_QUESTIONS_FOLDER")
     imap_complaints_folder: str = Field(default="INBOX.Complaints", alias="IMAP_COMPLAINTS_FOLDER")
+    imap_spam_folder: str = Field(default="Junk", alias="IMAP_SPAM_FOLDER")
+    imap_newsletter_folder: str = Field(default="INBOX.Newsletter", alias="IMAP_NEWSLETTER_FOLDER")
+    imap_offer_folder: str = Field(default="INBOX.Offer", alias="IMAP_OFFER_FOLDER")
     imap_other_folder: str = Field(default="INBOX.Other", alias="IMAP_OTHER_FOLDER")
     imap_billing_folder: str = Field(default="INBOX.Billing", alias="IMAP_BILLING_FOLDER")
     imap_system_folder: str = Field(default="INBOX.System", alias="IMAP_SYSTEM_FOLDER")
@@ -120,10 +160,17 @@ class Settings(BaseSettings):
     ollama_model: str = Field(default="qwen2.5:7b-instruct", alias="OLLAMA_MODEL")
     ollama_timeout_seconds: int = Field(default=60, alias="OLLAMA_TIMEOUT_SECONDS")
     ollama_temperature: float = Field(default=0.1, alias="OLLAMA_TEMPERATURE")
+    ollama_circuit_breaker_failures: int = Field(default=3, alias="OLLAMA_CIRCUIT_BREAKER_FAILURES")
+    ollama_circuit_breaker_timeout_seconds: int = Field(default=300, alias="OLLAMA_CIRCUIT_BREAKER_TIMEOUT_SECONDS")
 
     move_confidence_threshold: float = Field(default=0.75, alias="MOVE_CONFIDENCE_THRESHOLD")
+    other_move_confidence_threshold: float = Field(default=0.50, alias="OTHER_MOVE_CONFIDENCE_THRESHOLD")
     flag_confidence_threshold: float = Field(default=0.80, alias="FLAG_CONFIDENCE_THRESHOLD")
     draft_confidence_threshold: float = Field(default=0.85, alias="DRAFT_CONFIDENCE_THRESHOLD")
+    mailbox_thresholds_path: Path | None = Field(
+        default=Path("config/mailbox_thresholds.auto.json"),
+        alias="MAILBOX_THRESHOLDS_PATH",
+    )
 
     max_body_chars: int = Field(default=12000, alias="MAX_BODY_CHARS")
     max_retries: int = Field(default=3, alias="MAX_RETRIES")
@@ -158,6 +205,15 @@ class Settings(BaseSettings):
             raise ValueError(
                 "AUDIT_REDACT_PII must be True when STATE_REDACT_PII is True."
             )
+        return self
+    
+    @model_validator(mode="after")
+    def validate_safe_paths(self) -> "Settings":
+        _validate_safe_path(self.state_db_path, "STATE_DB_PATH")
+        _validate_safe_path(self.audit_log_path, "AUDIT_LOG_PATH")
+        _validate_safe_path(self.draft_dir, "DRAFT_DIR")
+        _validate_safe_path(self.mailboxes_config_path, "MAILBOXES_CONFIG_PATH")
+        _validate_safe_path(self.mailbox_thresholds_path, "MAILBOX_THRESHOLDS_PATH")
         return self
 
     def default_mailbox_id(self) -> str:
@@ -208,6 +264,7 @@ class Settings(BaseSettings):
             "imap_pass": _resolve_mailbox_secret(raw_mailbox, mailbox_user),
             "imap_max_retries": _get("imap_max_retries", self.imap_max_retries),
             "imap_retry_backoff_seconds": _get("imap_retry_backoff_seconds", self.imap_retry_backoff_seconds),
+            "imap_timeout_seconds": _get("imap_timeout_seconds", self.imap_timeout_seconds),
             "imap_search_criterion": _get("imap_search_criterion", self.imap_search_criterion),
             "imap_fetch_limit": _get("imap_fetch_limit", self.imap_fetch_limit),
             "imap_allow_folder_expunge": _get("imap_allow_folder_expunge", self.imap_allow_folder_expunge),
@@ -216,6 +273,9 @@ class Settings(BaseSettings):
             "imap_appointments_folder": _get("imap_appointments_folder", self.imap_appointments_folder),
             "imap_questions_folder": _get("imap_questions_folder", self.imap_questions_folder),
             "imap_complaints_folder": _get("imap_complaints_folder", self.imap_complaints_folder),
+            "imap_spam_folder": _get("imap_spam_folder", self.imap_spam_folder),
+            "imap_newsletter_folder": _get("imap_newsletter_folder", self.imap_newsletter_folder),
+            "imap_offer_folder": _get("imap_offer_folder", self.imap_offer_folder),
             "imap_other_folder": _get("imap_other_folder", self.imap_other_folder),
             "imap_billing_folder": _get("imap_billing_folder", self.imap_billing_folder),
             "imap_system_folder": _get("imap_system_folder", self.imap_system_folder),

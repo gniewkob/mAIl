@@ -8,7 +8,9 @@ from pathlib import Path
 from typing import Callable, cast
 
 from .healthcheck_cli import build_health_payload
+from .quality_learning_cli import build_quality_learning_payload
 from .quality_report import build_quality_payload
+from .reporting import summarize_state
 
 LOGGER = logging.getLogger(__name__)
 
@@ -24,6 +26,7 @@ def build_metrics_payload(
     recent_audit_max_age_minutes: int,
     max_uncertain: int,
 ) -> str:
+    state_summary = summarize_state(state_db)
     health = build_health_payload(
         state_db=state_db,
         audit_log=audit_log,
@@ -35,7 +38,13 @@ def build_metrics_payload(
         max_uncertain=max_uncertain,
     )
     quality = build_quality_payload(audit_log)
+    learning = build_quality_learning_payload(state_db=state_db, audit_log=audit_log)
+    autotune_source = _latest_autotune_source_dir()
+    deploy_summary = _latest_autotune_deploy_summary()
     operational_health_status = _operational_health_status(health)
+    state_mailboxes = cast(dict[str, int], state_summary.get("mailboxes", {}))
+    uncertain_by_mailbox = cast(dict[str, int], state_summary.get("uncertain_by_mailbox", {}))
+    failed_by_mailbox = cast(dict[str, int], state_summary.get("failed_by_mailbox", {}))
 
     lines = [
         "# HELP mailai_health_ok 1 when the mail AI system is healthy.",
@@ -56,7 +65,7 @@ def build_metrics_payload(
         )
 
     summary = quality["summary"]
-    for key in ["records", "uncertain", "failed", "cleanup_pending", "llm_routed", "rule_routed"]:
+    for key in ["records", "uncertain", "failed", "cleanup_pending", "llm_routed", "rule_routed", "routed_records"]:
         lines.extend(
             [
                 f"# HELP mailai_quality_{key} Current {key} value from audit-derived quality summary.",
@@ -76,10 +85,118 @@ def build_metrics_payload(
         ]
     )
 
-    lines.extend(_labelled_metrics("mailai_mailbox_records", "Records by mailbox in audit-derived quality summary.", quality["by_mailbox"], "mailbox_id"))
+    action_counts = cast(dict[str, int], quality.get("by_action", {}))
+    expected_skip_actions = ("skip_already_done", "skip_conflict", "skip_locked")
+    processing_failure_actions = (
+        "failed",
+        "failed_parse",
+        "failed_classify",
+        "failed_route",
+        "mailbox_failed",
+        "imap_auth_failed",
+        "move_copy_succeeded_cleanup_pending",
+        "move_route_uncertain_llm_failure",
+        "move_route_uncertain_parse_failure",
+        "cleanup_source_already_done_failed",
+    )
+    expected_skips = sum(int(action_counts.get(key, 0)) for key in expected_skip_actions)
+    processing_failures = sum(int(action_counts.get(key, 0)) for key in processing_failure_actions)
+    lines.extend(
+        [
+            "# HELP mailai_quality_expected_skips Expected non-actionable skips from idempotency/locking.",
+            "# TYPE mailai_quality_expected_skips gauge",
+            f"mailai_quality_expected_skips {float(expected_skips)}",
+            "# HELP mailai_quality_processing_failures Actionable processing failures across pipeline/runtime.",
+            "# TYPE mailai_quality_processing_failures gauge",
+            f"mailai_quality_processing_failures {float(processing_failures)}",
+        ]
+    )
+
+    parse_error_total = int(quality["by_category"].get("parse_error", 0))
+
+    lines.extend(
+        [
+            "# HELP mailai_processing_events_total Audit-derived processing event totals by outcome.",
+            "# TYPE mailai_processing_events_total counter",
+            f'mailai_processing_events_total{{outcome="llm_routed"}} {float(summary["llm_routed"])}',
+            f'mailai_processing_events_total{{outcome="rule_routed"}} {float(summary["rule_routed"])}',
+            f'mailai_processing_events_total{{outcome="uncertain"}} {float(summary["uncertain"])}',
+            f'mailai_processing_events_total{{outcome="failed"}} {float(summary["failed"])}',
+            f'mailai_processing_events_total{{outcome="parse_error"}} {float(parse_error_total)}',
+            f'mailai_processing_events_total{{outcome="cleanup_pending"}} {float(summary["cleanup_pending"])}',
+        ]
+    )
+
+    lines.extend(_labelled_metrics("mailai_mailbox_records", "Unique messages by mailbox from SQLite state.", state_mailboxes, "mailbox_id"))
+    lines.extend(
+        _labelled_metrics(
+            "mailai_mailbox_uncertain_current",
+            "Current uncertain records by mailbox from SQLite state.",
+            uncertain_by_mailbox,
+            "mailbox_id",
+        )
+    )
+    lines.extend(
+        _labelled_metrics(
+            "mailai_mailbox_failed_current",
+            "Current failed records by mailbox from SQLite state.",
+            failed_by_mailbox,
+            "mailbox_id",
+        )
+    )
+    lines.extend(_labelled_metrics("mailai_mailbox_audit_events", "Audit log events by mailbox in audit-derived quality summary.", quality["by_mailbox"], "mailbox_id"))
     lines.extend(_labelled_metrics("mailai_category_records", "Records by category in audit-derived quality summary.", quality["by_category"], "category"))
+    lines.extend(_labelled_metrics("mailai_action_records", "Records by action in audit-derived quality summary.", quality["by_action"], "action"))
     lines.extend(_labelled_metrics("mailai_target_folder_records", "Records by target folder in audit-derived quality summary.", quality["by_target_folder"], "target_folder"))
     lines.extend(_labelled_metrics("mailai_route_source_records", "Records by route source in audit-derived quality summary.", quality["by_route_source"], "route_source"))
+    lines.extend(
+        _labelled_metrics(
+            "mailai_quality_learning_proposals",
+            "Current quality-learning proposal counts by kind.",
+            cast(dict[str, int], learning.get("proposal_counts", {})),
+            "kind",
+        )
+    )
+    if autotune_source:
+        escaped = autotune_source.replace("\\", "\\\\").replace('"', '\\"')
+        lines.extend(
+            [
+                "# HELP mailai_autotune_signals_source Latest weekly autotune signals source directory (label-only indicator).",
+                "# TYPE mailai_autotune_signals_source gauge",
+                f'mailai_autotune_signals_source{{source="{escaped}"}} 1',
+            ]
+        )
+    counts: dict[str, int] = {}
+    soft_share = 0.0
+    rollout_aborted = False
+    if deploy_summary:
+        summary_counts = deploy_summary.get("verification_mode_counts", {})
+        if isinstance(summary_counts, dict):
+            counts = {str(k): int(v) for k, v in summary_counts.items()}
+        soft_value = deploy_summary.get("soft_pass_share")
+        if isinstance(soft_value, (int, float)):
+            soft_share = float(soft_value)
+        aborted_value = deploy_summary.get("rollout_aborted")
+        if isinstance(aborted_value, bool):
+            rollout_aborted = aborted_value
+    lines.extend(
+        _labelled_metrics(
+            "mailai_sieve_deploy_verifications",
+            "Latest weekly autotune deploy verification mode counts.",
+            counts,
+            "mode",
+        )
+    )
+    lines.extend(
+        [
+            "# HELP mailai_sieve_deploy_soft_pass_share Latest weekly autotune deploy soft-pass share.",
+            "# TYPE mailai_sieve_deploy_soft_pass_share gauge",
+            f"mailai_sieve_deploy_soft_pass_share {soft_share}",
+            "# HELP mailai_sieve_deploy_rollout_aborted 1 when latest weekly autotune deploy aborted after canary.",
+            "# TYPE mailai_sieve_deploy_rollout_aborted gauge",
+            f"mailai_sieve_deploy_rollout_aborted {1 if rollout_aborted else 0}",
+        ]
+    )
 
     return "\n".join(lines) + "\n"
 
@@ -108,6 +225,56 @@ def _labelled_metrics(metric_name: str, help_text: str, mapping: dict[str, int],
         escaped = str(key).replace("\\", "\\\\").replace('"', '\\"')
         lines.append(f'{metric_name}{{{label_name}="{escaped}"}} {int(value)}')
     return lines
+
+
+def _latest_autotune_source_dir(log_dir: Path = Path("logs/weekly-autotune")) -> str | None:
+    files = sorted(log_dir.glob("weekly-autotune-*.quality.json"), reverse=True)
+    for path in files:
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        source = payload.get("signals_source_dir")
+        if isinstance(source, str) and source.strip():
+            return source.strip()
+    return None
+
+
+def _latest_autotune_deploy_summary(log_dir: Path = Path("logs/weekly-autotune")) -> dict[str, object] | None:
+    files = sorted(log_dir.glob("weekly-autotune-*.quality.json"), reverse=True)
+    for path in files:
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        deploy = payload.get("deploy")
+        if not isinstance(deploy, dict):
+            quality_payload = payload.get("quality_payload")
+            if isinstance(quality_payload, dict):
+                deploy = quality_payload.get("deploy")
+        if not isinstance(deploy, dict):
+            continue
+
+        results = deploy.get("results", [])
+        if not isinstance(results, list):
+            results = []
+        counts: dict[str, int] = {}
+        soft = 0
+        total = 0
+        for item in results:
+            if not isinstance(item, dict):
+                continue
+            mode = str(item.get("verification_mode") or "failed")
+            counts[mode] = counts.get(mode, 0) + 1
+            if mode == "soft_pass":
+                soft += 1
+            total += 1
+        return {
+            "verification_mode_counts": counts,
+            "soft_pass_share": (soft / total) if total else 0.0,
+            "rollout_aborted": bool(deploy.get("rollout_aborted", False)),
+        }
+    return None
 
 
 def serve_metrics(
