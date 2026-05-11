@@ -102,9 +102,17 @@ class ManageSieveClient:
         first_line = first.decode("utf-8", errors="replace").rstrip("\r\n")
         literal_match = re.match(r"^\{(\d+)\+?\}$", first_line.strip())
         if not literal_match:
-            status = first_line.upper()
-            if status.startswith("OK"):
+            upper = first_line.upper()
+            if upper.startswith("OK"):
                 return ""
+            # On error (NO ...) or unexpected context lines, drain remaining
+            # response until terminating OK/NO/BYE so the read buffer stays
+            # aligned for subsequent commands on the same connection.
+            if not (upper.startswith("NO") or upper.startswith("BYE")):
+                try:
+                    self._read_reply(accept_bye=True)
+                except ManageSieveError:
+                    pass
             raise ManageSieveError(f"getscript failed: {first_line}")
         length = int(literal_match.group(1))
         payload = self._file.read(length)
@@ -173,6 +181,10 @@ class ManageSieveClient:
         wrapped = context.wrap_socket(raw, server_hostname=self.host)
         self._sock = wrapped
         self._file = wrapped.makefile("rb")
+        # After STARTTLS the server sends a fresh CAPABILITY block terminated
+        # by OK. Consume it so the read buffer stays aligned with subsequent
+        # AUTHENTICATE / GETSCRIPT replies (RFC 5804 §1.5).
+        self._read_reply()
 
     def _close_transport(self) -> None:
         if self._file is not None:
@@ -233,46 +245,27 @@ def deploy_all(
                     (name == script_name or name == script_name_stem) and active
                     for name, active in scripts
                 )
-                if not verified:
-                    upper_lines = " || ".join(raw_lines).upper()
-                    if "ACTIVE" in upper_lines and (
-                        script_name.upper() in upper_lines or script_name_stem.upper() in upper_lines
-                    ):
-                        verified = True
                 verification_mode = "explicit_listscripts" if verified else "failed"
+                verification_evidence: str | None = "listscripts_active" if verified else None
                 if not verified:
                     getscript_error: str | None = None
+                    remote_content = ""
                     try:
                         remote_content = client.get_script(script_name)
                     except Exception as exc:
                         getscript_error = str(exc)
-                        remote_content = ""
                     normalized_local = content.replace("\r\n", "\n").strip()
                     normalized_remote = remote_content.replace("\r\n", "\n").strip()
                     if normalized_remote and normalized_remote == normalized_local:
                         verified = True
                         verification_mode = "explicit_getscript"
                         verification_evidence = "getscript_content_match"
-                    elif getscript_error:
-                        upper_err = getscript_error.upper()
-                        if (
-                            "ACTIVE" in upper_err
-                            and (
-                                script_name.upper() in upper_err
-                                or script_name_stem.upper() in upper_err
-                            )
-                        ):
-                            verified = True
-                            verification_mode = "explicit_getscript_active_line"
-                            verification_evidence = f"getscript_active_line:{getscript_error}"
-                        else:
-                            verification_evidence = f"getscript_error:{getscript_error}"
                     elif normalized_remote:
                         verification_evidence = "getscript_content_mismatch"
+                    elif getscript_error:
+                        verification_evidence = f"getscript_error:{getscript_error}"
                     else:
                         verification_evidence = "getscript_empty_or_unavailable"
-                else:
-                    verification_evidence = "listscripts_active"
                 if not verified and activated and not strict_verify:
                     # Some servers acknowledge SETACTIVE but expose a non-standard LISTSCRIPTS format.
                     # In that case, treat successful upload+activate as operationally verified.
