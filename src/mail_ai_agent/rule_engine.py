@@ -8,6 +8,7 @@ from .folder_mapper import category_to_folder
 from .schemas import ParsedEmail, RuleDecision
 
 BILLING_KEYWORDS = ("faktura", "invoice", "fv", "proforma")
+BILLING_REGEX = re.compile("|".join(re.escape(k) for k in BILLING_KEYWORDS))
 PAYMENT_REGEX = re.compile(
     r"\b("
     r"płatno(?:ść|ści|sci|scią|sci[aą])|"
@@ -21,9 +22,9 @@ PAYMENT_REGEX = re.compile(
     r"platnosci@swiatlowodem\.pl|"
     r"obslugaplatnosci"
     r")\b",
-    flags=re.IGNORECASE,
 )
 SYSTEM_PATTERNS = ("mailer-daemon", "delivery status notification", "failure notice", "postmaster")
+SYSTEM_REGEX = re.compile("|".join(re.escape(k) for k in SYSTEM_PATTERNS))
 COMPLAINT_REGEX = re.compile(
     r"\b("
     r"reklamacj\w*|"
@@ -33,7 +34,6 @@ COMPLAINT_REGEX = re.compile(
     r"prosz[eę] o kontakt z wlascicielem|"
     r"efekt uslugi jest inny niz oczekiwany"
     r")\b",
-    flags=re.IGNORECASE,
 )
 MARKETING_REGEX = re.compile(
     r"\b("
@@ -48,7 +48,6 @@ MARKETING_REGEX = re.compile(
     r"kup teraz|sprawd[zź]|specjalnie dla ciebie|"
     r"reprezentuj\w* agencj\w*"
     r")\b",
-    flags=re.IGNORECASE,
 )
 
 
@@ -56,7 +55,7 @@ MARKETING_REGEX = re.compile(
 def _billing_email_pattern(billing_email: str | None) -> "re.Pattern[str] | None":
     if not billing_email:
         return None
-    return re.compile(re.escape(billing_email), flags=re.IGNORECASE)
+    return re.compile(re.escape(billing_email.lower()))
 
 
 def evaluate_rules(parsed_email: ParsedEmail, mailbox: MailboxConfig) -> RuleDecision:
@@ -65,7 +64,7 @@ def evaluate_rules(parsed_email: ParsedEmail, mailbox: MailboxConfig) -> RuleDec
     body = parsed_email.normalized_body.lower()
     combined = " ".join([subject, sender, body])
 
-    if any(keyword in subject for keyword in BILLING_KEYWORDS):
+    if BILLING_REGEX.search(subject):
         return RuleDecision(
             category="billing",
             target_folder=category_to_folder("billing", mailbox),
@@ -81,7 +80,7 @@ def evaluate_rules(parsed_email: ParsedEmail, mailbox: MailboxConfig) -> RuleDec
             reason="payment or billing pattern matched",
         )
 
-    if any(pattern in combined for pattern in SYSTEM_PATTERNS):
+    if SYSTEM_REGEX.search(combined):
         return RuleDecision(
             category="system",
             target_folder=category_to_folder("system", mailbox),
