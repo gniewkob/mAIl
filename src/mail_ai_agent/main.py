@@ -219,8 +219,8 @@ def _run_cleanup_pass(
             )
             LOGGER.exception("Cleanup pass failed for mailbox %s", mailbox.mailbox_id)
     if cleaned_records:
+        state.mark_cleanup_batch_done([r[0] for r in cleaned_records])
         for record_id, message_id, fingerprint, sender, subject, target_folder in cleaned_records:
-            state.mark_cleanup_done(record_id)
             audit.log(
                 level="INFO",
                 mailbox_id=mailbox.mailbox_id,
