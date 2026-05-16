@@ -19,7 +19,7 @@ def _chmod_owner_only(path: Path) -> None:
         pass
 
 
-def _secure_open(path: Path, mode: str, encoding: str = "utf-8", private: bool = True) -> os.fdopen:
+def _secure_open(path: Path, mode: str, encoding: str = "utf-8", private: bool = True):
     """
     Open a file with restricted permissions (0o600) to prevent race conditions.
     """
@@ -38,6 +38,11 @@ def _secure_open(path: Path, mode: str, encoding: str = "utf-8", private: bool =
     file_mode = 0o600 if private else 0o644
 
     fd = os.open(path, flags, file_mode)
+    if private and ("w" in mode or "a" in mode):
+        try:
+            os.fchmod(fd, file_mode)
+        except OSError:
+            pass
     return os.fdopen(fd, mode, encoding=encoding if "b" not in mode else None)
 
 
@@ -48,5 +53,10 @@ def _secure_write_text(path: Path, content: str, encoding: str = "utf-8", privat
     file_mode = 0o600 if private else 0o644
     # os.O_TRUNC ensures we overwrite existing content if file already exists
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, file_mode)
+    if private:
+        try:
+            os.fchmod(fd, file_mode)
+        except OSError:
+            pass
     with os.fdopen(fd, "w", encoding=encoding) as f:
         f.write(content)
