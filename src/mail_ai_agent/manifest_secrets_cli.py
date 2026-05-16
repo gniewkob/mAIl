@@ -5,6 +5,7 @@ import argparse
 import json
 import os
 import shlex
+import subprocess
 from pathlib import Path
 
 
@@ -43,6 +44,12 @@ def main() -> None:
         default=False,
         help="Allow printing secrets to stdout (use --sidecar-output instead)",
     )
+    parser.add_argument(
+        "--apply",
+        action="store_true",
+        default=False,
+        help="Directly apply secret migrations (e.g. write to keychain). Recommended over --sidecar-output for security.",
+    )
     args = parser.parse_args()
 
     payload, mailboxes = _load_manifest(Path(args.input))
@@ -65,6 +72,22 @@ def main() -> None:
         else:
             account = str(mailbox.get("imap_user") or mailbox_id)
             mailbox["imap_pass_ref"] = f"keychain:{args.service}/{account}"
+            if args.apply:
+                subprocess.run(
+                    [
+                        "security",
+                        "add-generic-password",
+                        "-U",
+                        "-s",
+                        args.service,
+                        "-a",
+                        account,
+                        "-w",
+                        secret,
+                    ],
+                    check=True,
+                    capture_output=True,
+                )
             sidecar_lines.append(
                 "security add-generic-password -U "
                 f"-s {shlex.quote(args.service)} -a {shlex.quote(account)} -w {shlex.quote(secret)}"
@@ -74,6 +97,11 @@ def main() -> None:
     _write_manifest(Path(args.output), payload)
 
     if args.sidecar_output:
+        print(
+            f"[WARN] Writing secrets to sidecar file: {args.sidecar_output}. "
+            "This file contains plaintext credentials. Delete it immediately after use.",
+            file=sys.stderr,
+        )
         sidecar_path = Path(args.sidecar_output)
         sidecar_path.write_text(
             "\n".join(sidecar_lines) + ("\n" if sidecar_lines else ""), encoding="utf-8"
