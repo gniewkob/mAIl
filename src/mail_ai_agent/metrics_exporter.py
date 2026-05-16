@@ -103,10 +103,11 @@ def _operational_health_status(health: dict[str, object]) -> int:
 
 
 def _labelled_metrics(metric_name: str, help_text: str, mapping: dict[str, int], label_name: str) -> list[str]:
-    lines = [f"# HELP {metric_name} {help_text}", f"# TYPE {metric_name} gauge"]
+    escaped_help = help_text.replace("\\", "\\\\").replace("\n", "\\n")
+    lines = [f"# HELP {metric_name} {escaped_help}", f"# TYPE {metric_name} gauge"]
     for key, value in sorted(mapping.items()):
-        escaped = str(key).replace("\\", "\\\\").replace('"', '\\"')
-        lines.append(f'{metric_name}{{{label_name}="{escaped}"}} {int(value)}')
+        escaped_key = str(key).replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
+        lines.append(f'{metric_name}{{{label_name}="{escaped_key}"}} {int(value)}')
     return lines
 
 
