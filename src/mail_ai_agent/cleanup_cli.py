@@ -69,8 +69,7 @@ def main() -> None:
             except Exception as exc:
                 failed_uids.append(record.imap_uid)
                 print(f"[WARN] Failed to clean UID {record.imap_uid}: {exc}", file=sys.stderr)
-        for record_id in cleaned_record_ids:
-            state.mark_cleanup_done(record_id)
+        state.mark_cleanup_batch_done(cleaned_record_ids)
 
     if failed_uids:
         payload["failed_uids"] = failed_uids
