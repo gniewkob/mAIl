@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from .utils import _chmod_owner_only
+from .utils import _chmod_owner_only, _secure_open
 
 
 class AuditLogger:
@@ -25,12 +25,11 @@ class AuditLogger:
             "timestamp": datetime.now(timezone.utc).isoformat(),
             **self._sanitize_payload(payload),
         }
-        with self.path.open("a", encoding="utf-8") as handle:
+        with _secure_open(self.path, "a", encoding="utf-8") as handle:
             handle.write(json.dumps(record, ensure_ascii=False) + "\n")
             handle.flush()
             if self._fsync:
                 os.fsync(handle.fileno())
-        _chmod_owner_only(self.path)
 
     def _sanitize_payload(self, payload: dict[str, Any]) -> dict[str, Any]:
         if not self.redact_pii:

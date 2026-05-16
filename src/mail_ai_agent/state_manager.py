@@ -7,7 +7,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from .schemas import EmailRecord, LeaseAcquireResult, WorkerLockResult, WorkflowStatus
-from .utils import _chmod_owner_only, _hash_value
+from .utils import _chmod_owner_only, _hash_value, _secure_write_text
 
 MOVE_CLEANUP_PENDING_ACTION = "move_copy_succeeded_cleanup_pending"
 
@@ -17,8 +17,10 @@ class StateManager:
         self.db_path = db_path
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         _chmod_owner_only(self.db_path.parent)
+        if not self.db_path.exists():
+            # Create the file with restricted permissions before sqlite3 touches it
+            _secure_write_text(self.db_path, "")
         self._initialize()
-        _chmod_owner_only(self.db_path)
 
     def _connect(self) -> sqlite3.Connection:
         connection = sqlite3.connect(self.db_path)
