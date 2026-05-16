@@ -242,18 +242,6 @@ class IMAPClient(AbstractContextManager["IMAPClient"]):
 
         self._run_with_retry("set_flagged", _flag)
 
-    def mark_deleted(self, folder: str, uid: str) -> None:
-        def _mark_deleted() -> None:
-            assert self.connection is not None
-            status, _ = self.connection.select(folder)
-            if status != "OK":
-                raise RuntimeError(f"Unable to select folder {folder}")
-            status, _ = self.connection.uid("store", uid, "+FLAGS.SILENT", "(\\Deleted)")
-            if status != "OK":
-                raise RuntimeError(f"Unable to mark message {uid} as deleted")
-
-        self._run_with_retry("mark_deleted", _mark_deleted)
-
     def expunge(self, folder: str) -> None:
         def _expunge() -> None:
             assert self.connection is not None
