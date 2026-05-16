@@ -167,6 +167,25 @@ def test_load_audit_records_skips_malformed_lines(tmp_path: Path) -> None:
     assert records[1]["action_taken"] == "also_ok"
 
 
+def test_tail_audit_records_skips_malformed_lines(tmp_path: Path) -> None:
+    """tail_audit_records must skip malformed JSON lines."""
+    from mail_ai_agent.reporting import tail_audit_records
+
+    log_path = tmp_path / "audit.jsonl"
+    log_path.write_text(
+        '{"n": 1}\n' "NOT VALID JSON\n" '{"n": 2}\n',
+        encoding="utf-8",
+    )
+
+    result = tail_audit_records(log_path, 5)
+    assert len(result) == 2
+    # Records are collected in reverse order from the end of the file, then reversed back.
+    # {"n": 2} is last in file, so it's first in collected_lines.
+    # reversed(collected_lines) restores the original file order for records.
+    assert result[0]["n"] == 1
+    assert result[1]["n"] == 2
+
+
 def test_export_audit_csv_writes_atomically(tmp_path: Path) -> None:
     from mail_ai_agent.reporting import export_audit_csv
 
