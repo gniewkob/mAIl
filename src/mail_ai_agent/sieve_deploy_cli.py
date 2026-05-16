@@ -6,10 +6,11 @@ import json
 import re
 import socket
 import ssl
+import typing
 from dataclasses import dataclass
 from pathlib import Path
 
-from .config import Settings
+from .config import MailboxConfig, Settings
 
 
 class ManageSieveError(RuntimeError):
@@ -37,7 +38,7 @@ class ManageSieveClient:
         self.timeout = timeout
         self.tls_mode = tls_mode
         self._sock: socket.socket | None = None
-        self._file = None
+        self._file: typing.IO[bytes] | None = None
 
     def __enter__(self) -> "ManageSieveClient":
         if self.tls_mode in {"auto", "implicit"}:
@@ -51,7 +52,12 @@ class ManageSieveClient:
         self._connect_starttls()
         return self
 
-    def __exit__(self, exc_type, exc, tb) -> None:
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: object,
+    ) -> None:
         try:
             self._send_line("LOGOUT")
             self._read_reply(accept_bye=True)
@@ -195,6 +201,117 @@ class ManageSieveClient:
             self._sock = None
 
 
+def _verify_deployment(
+    client: ManageSieveClient,
+    script_name: str,
+    content: str,
+    activated: bool,
+    strict_verify: bool,
+) -> tuple[bool, str, str | None, list[str]]:
+    """Verifies that the script was deployed successfully."""
+    scripts, raw_lines = client.list_scripts()
+    script_name_stem = script_name.removesuffix(".sieve")
+    verified = any((name == script_name or name == script_name_stem) and active for name, active in scripts)
+    verification_mode = "explicit_listscripts" if verified else "failed"
+    verification_evidence: str | None = "listscripts_active" if verified else None
+
+    if not verified:
+        getscript_error: str | None = None
+        remote_content = ""
+        try:
+            remote_content = client.get_script(script_name)
+        except Exception as exc:
+            getscript_error = str(exc)
+        normalized_local = content.replace("\r\n", "\n").strip()
+        normalized_remote = remote_content.replace("\r\n", "\n").strip()
+        if normalized_remote and normalized_remote == normalized_local:
+            verified = True
+            verification_mode = "explicit_getscript"
+            verification_evidence = "getscript_content_match"
+        elif normalized_remote:
+            verification_evidence = "getscript_content_mismatch"
+        elif getscript_error:
+            verification_evidence = f"getscript_error:{getscript_error}"
+        else:
+            verification_evidence = "getscript_empty_or_unavailable"
+
+    if not verified and activated and not strict_verify:
+        # Some servers acknowledge SETACTIVE but expose a non-standard LISTSCRIPTS format.
+        # In that case, treat successful upload+activate as operationally verified.
+        verified = True
+        verification_mode = "soft_pass"
+        if verification_evidence is None:
+            verification_evidence = "soft_pass_fallback_after_activate"
+
+    return verified, verification_mode, verification_evidence, raw_lines
+
+
+def _deploy_single_mailbox(
+    mailbox: MailboxConfig,
+    script_path: Path,
+    script_name: str,
+    port: int,
+    timeout_seconds: int,
+    tls_mode: str,
+    strict_verify: bool,
+) -> DeployResult:
+    """Deploys a script to a single mailbox."""
+    if not script_path.exists():
+        return DeployResult(
+            mailbox_id=mailbox.mailbox_id,
+            host=mailbox.imap_host,
+            user=mailbox.imap_user,
+            script_path=str(script_path),
+            uploaded=False,
+            activated=False,
+            verified=False,
+            error="missing generated script file",
+        )
+
+    content = script_path.read_text(encoding="utf-8")
+    try:
+        with ManageSieveClient(
+            mailbox.imap_host,
+            port=port,
+            timeout=timeout_seconds,
+            tls_mode=tls_mode,
+        ) as client:
+            client.authenticate_plain(mailbox.imap_user, mailbox.imap_pass.get_secret_value())
+            client.put_script(script_name, content)
+            client.set_active(script_name)
+
+            uploaded = True
+            activated = True
+
+            verified, mode, evidence, raw_lines = _verify_deployment(
+                client, script_name, content, activated, strict_verify
+            )
+
+            return DeployResult(
+                mailbox_id=mailbox.mailbox_id,
+                host=mailbox.imap_host,
+                user=mailbox.imap_user,
+                script_path=str(script_path),
+                uploaded=uploaded,
+                activated=activated,
+                verified=verified,
+                verification_mode=mode,
+                verification_evidence=evidence,
+                error=None if verified else f"script not active after deployment; LISTSCRIPTS={raw_lines!r}",
+            )
+    except Exception as exc:
+        return DeployResult(
+            mailbox_id=mailbox.mailbox_id,
+            host=mailbox.imap_host,
+            user=mailbox.imap_user,
+            script_path=str(script_path),
+            uploaded=False,
+            activated=False,
+            verified=False,
+            error=str(exc),
+        )
+
+
 def deploy_all(
     *,
     settings: Settings,
@@ -206,100 +323,26 @@ def deploy_all(
     strict_verify: bool,
     mailbox_ids: list[str] | None = None,
 ) -> list[DeployResult]:
+    """Deploys the new script, activates it, and cleans up old ones."""
     results: list[DeployResult] = []
     selected_ids = set(mailbox_ids or [])
+
     for mailbox in settings.load_mailboxes():
         if selected_ids and mailbox.mailbox_id not in selected_ids:
             continue
+
         script_path = input_dir / f"{mailbox.mailbox_id}.main.sieve"
-        if not script_path.exists():
-            results.append(
-                DeployResult(
-                    mailbox_id=mailbox.mailbox_id,
-                    host=mailbox.imap_host,
-                    user=mailbox.imap_user,
-                    script_path=str(script_path),
-                    uploaded=False,
-                    activated=False,
-                    verified=False,
-                    error="missing generated script file",
-                )
-            )
-            continue
-        content = script_path.read_text(encoding="utf-8")
-        try:
-            with ManageSieveClient(
-                mailbox.imap_host,
-                port=port,
-                timeout=timeout_seconds,
-                tls_mode=tls_mode,
-            ) as client:
-                client.authenticate_plain(mailbox.imap_user, mailbox.imap_pass.get_secret_value())
-                client.put_script(script_name, content)
-                client.set_active(script_name)
-                uploaded = True
-                activated = True
-                scripts, raw_lines = client.list_scripts()
-                script_name_stem = script_name.removesuffix(".sieve")
-                verified = any(
-                    (name == script_name or name == script_name_stem) and active
-                    for name, active in scripts
-                )
-                verification_mode = "explicit_listscripts" if verified else "failed"
-                verification_evidence: str | None = "listscripts_active" if verified else None
-                if not verified:
-                    getscript_error: str | None = None
-                    remote_content = ""
-                    try:
-                        remote_content = client.get_script(script_name)
-                    except Exception as exc:
-                        getscript_error = str(exc)
-                    normalized_local = content.replace("\r\n", "\n").strip()
-                    normalized_remote = remote_content.replace("\r\n", "\n").strip()
-                    if normalized_remote and normalized_remote == normalized_local:
-                        verified = True
-                        verification_mode = "explicit_getscript"
-                        verification_evidence = "getscript_content_match"
-                    elif normalized_remote:
-                        verification_evidence = "getscript_content_mismatch"
-                    elif getscript_error:
-                        verification_evidence = f"getscript_error:{getscript_error}"
-                    else:
-                        verification_evidence = "getscript_empty_or_unavailable"
-                if not verified and activated and not strict_verify:
-                    # Some servers acknowledge SETACTIVE but expose a non-standard LISTSCRIPTS format.
-                    # In that case, treat successful upload+activate as operationally verified.
-                    verified = True
-                    verification_mode = "soft_pass"
-                    if verification_evidence is None:
-                        verification_evidence = "soft_pass_fallback_after_activate"
-                results.append(
-                    DeployResult(
-                        mailbox_id=mailbox.mailbox_id,
-                        host=mailbox.imap_host,
-                        user=mailbox.imap_user,
-                        script_path=str(script_path),
-                        uploaded=uploaded,
-                        activated=activated,
-                        verified=verified,
-                        verification_mode=verification_mode,
-                        verification_evidence=verification_evidence,
-                        error=None if verified else f"script not active after deployment; LISTSCRIPTS={raw_lines!r}",
-                    )
-                )
-        except Exception as exc:
-            results.append(
-                DeployResult(
-                    mailbox_id=mailbox.mailbox_id,
-                    host=mailbox.imap_host,
-                    user=mailbox.imap_user,
-                    script_path=str(script_path),
-                    uploaded=False,
-                    activated=False,
-                    verified=False,
-                    error=str(exc),
-                )
-            )
+        result = _deploy_single_mailbox(
+            mailbox=mailbox,
+            script_path=script_path,
+            script_name=script_name,
+            port=port,
+            timeout_seconds=timeout_seconds,
+            tls_mode=tls_mode,
+            strict_verify=strict_verify,
+        )
+        results.append(result)
+
     return results
 
 
