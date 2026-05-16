@@ -546,7 +546,6 @@ class StateManager:
                 (worker_id, expires_at.isoformat(), now.isoformat(), record_id),
             )
             return True
-
     def mark_cleanup_done(self, record_id: int) -> None:
         self.mark_cleanup_batch_done([record_id])
 
