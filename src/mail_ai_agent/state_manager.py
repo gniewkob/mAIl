@@ -546,17 +546,27 @@ class StateManager:
             return True
 
     def mark_cleanup_done(self, record_id: int) -> None:
+        self.mark_cleanup_batch_done([record_id])
+
+    def mark_cleanup_batch_done(self, record_ids: list[int]) -> None:
+        if not record_ids:
+            return
         now = datetime.now(timezone.utc).isoformat()
-        with self._managed_connection() as conn:
-            conn.execute(
-                """
-                UPDATE email_processing_state
-                SET status = ?, action_taken = ?, error_message = NULL, last_error_at = NULL, 
-                    last_error_type = NULL, lock_owner = NULL, lock_expires_at = NULL, updated_at = ?
-                WHERE id = ?
-                """,
-                (WorkflowStatus.PROCESSED.value, "cleanup_source", now, record_id),
-            )
+        # SQLite has a limit on the number of parameters (often 999)
+        chunk_size = 900
+        for i in range(0, len(record_ids), chunk_size):
+            chunk = record_ids[i : i + chunk_size]
+            placeholders = ",".join("?" for _ in chunk)
+            with self._managed_connection() as conn:
+                conn.execute(
+                    f"""
+                    UPDATE email_processing_state
+                    SET status = ?, action_taken = ?, error_message = NULL, last_error_at = NULL,
+                        last_error_type = NULL, lock_owner = NULL, lock_expires_at = NULL, updated_at = ?
+                    WHERE id IN ({placeholders})
+                    """,
+                    (WorkflowStatus.PROCESSED.value, "cleanup_source", now, *chunk),
+                )
 
     def _lookup_identity_rows(
         self,

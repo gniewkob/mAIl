@@ -137,7 +137,6 @@ def _refresh_worker_lock(*, state: StateManager, settings: Settings) -> None:
     if not result.acquired:
         raise RuntimeError(f"Worker lock lost during processing: {result.reason}")
 
-
 def _process_mailbox(
     *,
     mailbox: MailboxConfig,
