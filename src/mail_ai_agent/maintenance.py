@@ -6,9 +6,13 @@ from contextlib import closing
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 import json
+import logging
 from pathlib import Path
 
 from .utils import _chmod_owner_only, _hash_value
+
+
+LOGGER = logging.getLogger(__name__)
 
 
 @dataclass
@@ -71,8 +75,11 @@ def prune_drafts(draft_dir: Path, *, older_than_days: int) -> DraftPruneResult:
             continue
         modified = datetime.fromtimestamp(item.stat().st_mtime, tz=timezone.utc)
         if modified < cutoff:
-            item.unlink()
-            removed += 1
+            try:
+                item.unlink()
+                removed += 1
+            except Exception as exc:
+                LOGGER.warning("Failed to remove %s: %s", item.name, exc)
         else:
             kept += 1
 

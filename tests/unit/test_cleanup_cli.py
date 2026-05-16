@@ -270,3 +270,35 @@ def test_cleanup_cli_apply_skips_delete_on_uidvalidity_mismatch(
     record = manager.get_by_message_id("user_example_com", "msg-uidv")
     assert record is not None
     assert record.status.value == "cleanup_pending"
+
+
+def test_cleanup_cli_logs_warning_and_includes_failed_uids_on_error(
+    monkeypatch, tmp_path: Path, capsys: pytest.CaptureFixture[str], caplog: pytest.LogCaptureFixture
+) -> None:
+    state_db = tmp_path / "state.sqlite"
+    seed_cleanup_pending_record(state_db)
+
+    monkeypatch.setattr("mail_ai_agent.cleanup_cli.IMAPClient", FakeFailingDeleteIMAPClient)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "cleanup_cli",
+            "--apply",
+        ],
+    )
+    monkeypatch.setenv("IMAP_HOST", "imap.example.com")
+    monkeypatch.setenv("IMAP_USER", "user@example.com")
+    monkeypatch.setenv("IMAP_PASS", "secret")
+    monkeypatch.setenv("STATE_DB_PATH", str(state_db))
+
+    with caplog.at_level("WARNING"):
+        main()
+
+    # Verify JSON output contains failed_uids
+    payload = json.loads(capsys.readouterr().out)
+    assert "failed_uids" in payload
+    assert "42" in payload["failed_uids"]
+
+    # Verify warning was logged
+    assert "Failed to clean UID 42: delete failed" in caplog.text
