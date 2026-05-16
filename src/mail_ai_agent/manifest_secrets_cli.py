@@ -7,6 +7,8 @@ import os
 import shlex
 from pathlib import Path
 
+from .utils import _secure_write_text
+
 
 def _normalize_secret_name(value: str) -> str:
     return "".join(char if char.isalnum() else "_" for char in value.upper()).strip("_") or "DEFAULT"
@@ -23,11 +25,8 @@ def _load_manifest(path: Path) -> tuple[dict[str, object] | list[dict[str, objec
 
 
 def _write_manifest(path: Path, payload: dict[str, object] | list[dict[str, object]]) -> None:
-    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    try:
-        os.chmod(path, 0o600)
-    except OSError:
-        pass
+    content = json.dumps(payload, ensure_ascii=False, indent=2) + "\n"
+    _secure_write_text(path, content, encoding="utf-8")
 
 
 def main() -> None:
@@ -75,13 +74,8 @@ def main() -> None:
 
     if args.sidecar_output:
         sidecar_path = Path(args.sidecar_output)
-        sidecar_path.write_text(
-            "\n".join(sidecar_lines) + ("\n" if sidecar_lines else ""), encoding="utf-8"
-        )
-        try:
-            os.chmod(sidecar_path, 0o600)
-        except OSError:
-            pass
+        content = "\n".join(sidecar_lines) + ("\n" if sidecar_lines else "")
+        _secure_write_text(sidecar_path, content, encoding="utf-8")
     elif sidecar_lines:
         if not args.allow_stdout_secrets:
             raise SystemExit(

@@ -6,7 +6,7 @@ import re
 from pathlib import Path
 
 from .schemas import FinalDecision, ParsedEmail
-from .utils import _chmod_owner_only, _hash_value
+from .utils import _chmod_owner_only, _hash_value, _secure_write_text
 
 
 class DraftStore:
@@ -40,8 +40,8 @@ class DraftStore:
             if sender:
                 payload["sender_sha256"] = _hash_value(sender)
         tmp = target.with_suffix(".tmp")
-        tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-        _chmod_owner_only(tmp)
+        content = json.dumps(payload, ensure_ascii=False, indent=2)
+        _secure_write_text(tmp, content, encoding="utf-8")
         os.replace(tmp, target)
         return target
 

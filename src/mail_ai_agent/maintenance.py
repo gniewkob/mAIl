@@ -9,7 +9,7 @@ import json
 import logging
 from pathlib import Path
 
-from .utils import _chmod_owner_only, _hash_value
+from .utils import _chmod_owner_only, _hash_value, _secure_write_text
 
 
 LOGGER = logging.getLogger(__name__)
@@ -59,8 +59,8 @@ def rotate_audit_log(path: Path, *, max_bytes: int, backup_count: int = 5) -> Ro
     archive = path.with_suffix(path.suffix + ".1")
     path.replace(archive)          # atomic rename — crash-safe
     _chmod_owner_only(archive)
-    path.touch()                   # create fresh empty log
-    _chmod_owner_only(path)
+    # create fresh empty log with restricted permissions
+    _secure_write_text(path, "")
     return RotationResult(rotated=True, archive_path=archive, original_size=size)
 
 
@@ -180,8 +180,8 @@ def scrub_draft_pii(draft_dir: Path) -> DraftScrubResult:
             changed = True
         if changed:
             tmp = item.with_suffix(".tmp")
-            tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-            _chmod_owner_only(tmp)
+            content = json.dumps(payload, ensure_ascii=False, indent=2)
+            _secure_write_text(tmp, content, encoding="utf-8")
             os.replace(tmp, item)
             updated_files += 1
     return DraftScrubResult(updated_files=updated_files)

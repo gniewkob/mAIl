@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from .utils import _chmod_owner_only
+from .utils import _chmod_owner_only, _secure_open
 
 
 class AuditLogger:
@@ -38,13 +38,9 @@ class AuditLogger:
             "timestamp": datetime.now(timezone.utc).isoformat(),
             **self._sanitize_payload(payload),
         }
-        
         line = json.dumps(record, ensure_ascii=False) + "\n"
-        
-        # Thread-level lock
         with self._lock:
-            with self.path.open("a", encoding="utf-8") as handle:
-                # File-level lock for cross-process safety
+            with _secure_open(self.path, "a", encoding="utf-8") as handle:
                 fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
                 try:
                     handle.write(line)
@@ -53,7 +49,6 @@ class AuditLogger:
                         os.fsync(handle.fileno())
                 finally:
                     fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
-        
         _chmod_owner_only(self.path)
 
     def _sanitize_payload(self, payload: dict[str, Any]) -> dict[str, Any]:
