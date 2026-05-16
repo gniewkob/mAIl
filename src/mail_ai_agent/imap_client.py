@@ -127,12 +127,8 @@ class IMAPClient(AbstractContextManager["IMAPClient"]):
             status, data = self.connection.list()
             if status != "OK":
                 raise RuntimeError("Unable to list IMAP folders")
-            folders: list[str] = []
-            for item in data or []:
-                folder = _parse_list_response(item)
-                if folder and folder not in folders:
-                    folders.append(folder)
-            return folders
+            raw_folders = (_parse_list_response(item) for item in (data or []))
+            return list(dict.fromkeys(f for f in raw_folders if f))
 
         return self._run_with_retry("list_folders", _list)
 
@@ -153,10 +149,7 @@ class IMAPClient(AbstractContextManager["IMAPClient"]):
 
     def validate_routing_setup(self, *, source_folder: str, target_folders: list[str], dry_run: bool) -> None:
         self.ensure_folder_access(source_folder, readonly=dry_run)
-        unique_targets = []
-        for folder in target_folders:
-            if folder not in unique_targets:
-                unique_targets.append(folder)
+        unique_targets = list(dict.fromkeys(target_folders))
         for folder in unique_targets:
             self.ensure_folder_access(folder, readonly=False)
         if not dry_run and not (self.supports_uidplus() or self.mailbox.imap_allow_folder_expunge):
