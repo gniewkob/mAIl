@@ -67,7 +67,8 @@ class ConnectionPool:
         """Initialize database with WAL mode and proper settings."""
         with self.connection() as conn:
             conn.execute("PRAGMA journal_mode=WAL")
-            conn.execute(f"PRAGMA busy_timeout={DEFAULT_SQLITE_BUSY_TIMEOUT_MS}")
+            # Use safe string formatting for PRAGMA as it doesn't support parameters
+            conn.execute("PRAGMA busy_timeout=%d" % int(DEFAULT_SQLITE_BUSY_TIMEOUT_MS))
             conn.execute("PRAGMA foreign_keys=ON")
         
         _chmod_owner_only(self.db_path)

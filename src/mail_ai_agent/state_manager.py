@@ -6,7 +6,7 @@ from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from .constants import ActionTaken, MOVE_CLEANUP_PENDING_ACTION
+from .constants import DEFAULT_SQLITE_BUSY_TIMEOUT_MS, ActionTaken, MOVE_CLEANUP_PENDING_ACTION
 from .schemas import EmailRecord, LeaseAcquireResult, WorkerLockResult, WorkflowStatus
 from .utils import _chmod_owner_only, _hash_value
 
@@ -24,7 +24,8 @@ class StateManager:
         connection = sqlite3.connect(self.db_path, timeout=30.0)
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA journal_mode=WAL")
-        connection.execute("PRAGMA busy_timeout=5000")
+        # Use safe string formatting for PRAGMA as it doesn't support parameters
+        connection.execute("PRAGMA busy_timeout=%d" % int(DEFAULT_SQLITE_BUSY_TIMEOUT_MS))
         return connection
 
     @contextmanager
