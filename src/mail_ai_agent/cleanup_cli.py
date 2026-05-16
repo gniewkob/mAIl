@@ -2,11 +2,15 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import sys
 
 from .config import Settings
 from .imap_client import IMAPClient
 from .state_manager import StateManager
+
+
+LOGGER = logging.getLogger(__name__)
 
 
 def main() -> None:
@@ -68,7 +72,7 @@ def main() -> None:
                 cleaned_record_ids.append(record.id)
             except Exception as exc:
                 failed_uids.append(record.imap_uid)
-                print(f"[WARN] Failed to clean UID {record.imap_uid}: {exc}", file=sys.stderr)
+                LOGGER.warning("Failed to clean UID %s: %s", record.imap_uid, exc)
         for record_id in cleaned_record_ids:
             state.mark_cleanup_done(record_id)
 

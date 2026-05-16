@@ -418,3 +418,40 @@ def test_maintain_sqlite_closes_connection(monkeypatch) -> None:
 
     assert result["status"] == "ok"
     assert holder["conn"].closed is True
+
+
+def test_prune_drafts_continues_on_unlink_error(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+    """If one file fails to unlink, the process must log and continue."""
+    import pytest
+    from unittest.mock import patch
+
+    # Create two files that should be pruned
+    f1 = tmp_path / "f1.json"
+    f1.write_text("{}", encoding="utf-8")
+    f2 = tmp_path / "f2.json"
+    f2.write_text("{}", encoding="utf-8")
+
+    # Set them to be old
+    old_time = time.time() - 3 * 24 * 3600
+    os.utime(f1, (old_time, old_time))
+    os.utime(f2, (old_time, old_time))
+
+    # Mock Path.unlink to fail for f1
+    original_unlink = Path.unlink
+
+    def failing_unlink(self, *args, **kwargs):
+        if self.name == "f1.json":
+            raise OSError("permission denied")
+        return original_unlink(self, *args, **kwargs)
+
+    with patch.object(Path, "unlink", failing_unlink):
+        with caplog.at_level("WARNING"):
+            result = prune_drafts(tmp_path, older_than_days=1)
+
+    # f1 should have failed (but we still count it as 'tried')
+    # Wait, the code increments 'removed' ONLY if unlink succeeds.
+    # So removed should be 1 (for f2).
+    assert result.removed == 1
+    assert "Failed to remove f1.json: permission denied" in caplog.text
+    assert not f2.exists()
+    assert f1.exists()
