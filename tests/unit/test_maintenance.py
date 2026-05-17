@@ -5,6 +5,9 @@ import time
 from pathlib import Path
 import json
 
+import pytest
+import sqlite3
+
 from mail_ai_agent.maintenance import maintain_sqlite, prune_drafts, rotate_audit_log, scrub_draft_pii, scrub_state_pii
 from mail_ai_agent.state_manager import StateManager
 
@@ -419,7 +422,6 @@ def test_maintain_sqlite_closes_connection(monkeypatch) -> None:
     assert result["status"] == "ok"
     assert holder["conn"].closed is True
 
-
 def test_prune_drafts_continues_on_unlink_error(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
     """If one file fails to unlink, the process must log and continue."""
     import pytest
@@ -455,3 +457,47 @@ def test_prune_drafts_continues_on_unlink_error(tmp_path: Path, caplog: pytest.L
     assert "Failed to remove f1.json: permission denied" in caplog.text
     assert not f2.exists()
     assert f1.exists()
+
+
+def test_scrub_state_pii_transaction_rollback(tmp_path: Path, monkeypatch) -> None:
+    """scrub_state_pii must rollback the transaction if an exception occurs during execution."""
+    from mail_ai_agent.maintenance import scrub_state_pii
+
+    db_path = tmp_path / "state.sqlite"
+    db_path.touch()
+
+    class MockConnection:
+        def __init__(self, *args, **kwargs):
+            self.execute_calls = []
+            self.row_factory = None
+            self.closed = False
+
+        def execute(self, query, *args, **kwargs):
+            self.execute_calls.append(query)
+            if "UPDATE email_processing_state" in query:
+                raise sqlite3.OperationalError("Simulated update failure")
+
+            # mock for fetchall
+            class MockCursor:
+                def fetchall(self):
+                    return []
+                @property
+                def rowcount(self):
+                    return 0
+            return MockCursor()
+
+        def close(self):
+            self.closed = True
+
+    mock_conn = MockConnection()
+
+    def mock_connect(*args, **kwargs):
+        return mock_conn
+
+    monkeypatch.setattr(sqlite3, "connect", mock_connect)
+
+    with pytest.raises(sqlite3.OperationalError, match="Simulated update failure"):
+        scrub_state_pii(db_path)
+
+    assert "ROLLBACK" in mock_conn.execute_calls
+    assert mock_conn.closed is True
