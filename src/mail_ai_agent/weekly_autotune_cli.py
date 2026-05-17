@@ -203,33 +203,12 @@ def _build_mailbox_thresholds(settings: Settings, quality_payload: dict[str, Any
     }
 
 
-def run_weekly_autotune(
-    *,
-    settings: Settings,
-    sieve_signals_dir: Path,
+def _merge_and_save_policy(
+    signals: dict[str, Counter[str]],
     auto_policy_path: Path,
-    generated_sieve_dir: Path,
-    learning_output_dir: Path,
-    window_days: int,
     min_count: int,
     max_keywords_per_bucket: int,
-    mailbox_thresholds_path: Path,
-    deploy: bool,
-    deploy_port: int,
-    deploy_timeout_seconds: int,
-    deploy_tls_mode: str,
-    deploy_strict_verify: bool,
-    deploy_canary_count: int,
-    deploy_canary_max_soft_pass_share: float,
-) -> dict[str, Any]:
-    quality_payload = build_quality_learning_payload(
-        state_db=settings.state_db_path,
-        audit_log=settings.audit_log_path,
-        window_days=window_days,
-    )
-
-    resolved_signals_dir = sieve_signals_dir.resolve()
-    signals = _extract_sieve_signals(sieve_signals_dir)
+) -> SievePolicy:
     base_policy = _load_policy(auto_policy_path)
     merged = SievePolicy(
         spam_headers=base_policy.spam_headers,
@@ -260,17 +239,135 @@ def run_weekly_autotune(
         ),
     )
     _save_policy(auto_policy_path, merged)
+    return merged
+
+
+def _generate_sieve_scripts(settings: Settings, merged_policy: SievePolicy, generated_sieve_dir: Path) -> list[str]:
+    generated_sieve_dir.mkdir(parents=True, exist_ok=True)
+    generated_files: list[str] = []
+    for mailbox in settings.load_mailboxes():
+        content = _render(mailbox, merged_policy)
+        path = generated_sieve_dir / f"{mailbox.mailbox_id}.main.sieve"
+        path.write_text(content, encoding="utf-8")
+        generated_files.append(str(path))
+    return generated_files
+
+
+def _execute_deployment(
+    settings: Settings,
+    generated_sieve_dir: Path,
+    deploy_port: int,
+    deploy_timeout_seconds: int,
+    deploy_tls_mode: str,
+    deploy_strict_verify: bool,
+    deploy_canary_count: int,
+    deploy_canary_max_soft_pass_share: float,
+) -> dict[str, Any]:
+    mailbox_ids = [mailbox.mailbox_id for mailbox in settings.load_mailboxes()]
+    canary_count = min(max(deploy_canary_count, 0), len(mailbox_ids))
+    canary_ids = mailbox_ids[:canary_count]
+    rest_ids = mailbox_ids[canary_count:]
+    canary_results = []
+    full_results = []
+    rollout_aborted = False
+    rollout_abort_reason = None
+
+    if canary_ids:
+        canary_results = deploy_all(
+            settings=settings,
+            input_dir=generated_sieve_dir,
+            script_name="main.sieve",
+            port=deploy_port,
+            timeout_seconds=deploy_timeout_seconds,
+            tls_mode=deploy_tls_mode,
+            strict_verify=deploy_strict_verify,
+            mailbox_ids=canary_ids,
+        )
+        canary_verified = all(item.verified for item in canary_results) if canary_results else True
+        soft_pass_count = sum(1 for item in canary_results if item.verification_mode == "soft_pass")
+        soft_pass_share = (soft_pass_count / len(canary_results)) if canary_results else 0.0
+        if (not canary_verified) or (soft_pass_share > deploy_canary_max_soft_pass_share):
+            rollout_aborted = True
+            rollout_abort_reason = (
+                f"canary gate failed: verified={canary_verified}, "
+                f"soft_pass_share={soft_pass_share:.4f}, "
+                f"max_soft_pass_share={deploy_canary_max_soft_pass_share:.4f}"
+            )
+
+    if not rollout_aborted and rest_ids:
+        full_results = deploy_all(
+            settings=settings,
+            input_dir=generated_sieve_dir,
+            script_name="main.sieve",
+            port=deploy_port,
+            timeout_seconds=deploy_timeout_seconds,
+            tls_mode=deploy_tls_mode,
+            strict_verify=deploy_strict_verify,
+            mailbox_ids=rest_ids,
+        )
+
+    all_results = canary_results + full_results
+    return {
+        "ok": sum(1 for x in all_results if x.verified),
+        "failed": sum(1 for x in all_results if not x.verified),
+        "rollout_aborted": rollout_aborted,
+        "rollout_abort_reason": rollout_abort_reason,
+        "canary": {
+            "mailbox_ids": canary_ids,
+            "results": [x.__dict__ for x in canary_results],
+        },
+        "full": {
+            "mailbox_ids": rest_ids,
+            "results": [x.__dict__ for x in full_results],
+        },
+        "results": [x.__dict__ for x in all_results],
+    }
+
+
+def run_weekly_autotune(
+    *,
+    settings: Settings,
+    sieve_signals_dir: Path,
+    auto_policy_path: Path,
+    generated_sieve_dir: Path,
+    learning_output_dir: Path,
+    window_days: int,
+    min_count: int,
+    max_keywords_per_bucket: int,
+    mailbox_thresholds_path: Path,
+    deploy: bool,
+    deploy_port: int,
+    deploy_timeout_seconds: int,
+    deploy_tls_mode: str,
+    deploy_strict_verify: bool,
+    deploy_canary_count: int,
+    deploy_canary_max_soft_pass_share: float,
+) -> dict[str, Any]:
+    quality_payload = build_quality_learning_payload(
+        state_db=settings.state_db_path,
+        audit_log=settings.audit_log_path,
+        window_days=window_days,
+    )
+
+    resolved_signals_dir = sieve_signals_dir.resolve()
+    signals = _extract_sieve_signals(sieve_signals_dir)
+
+    merged = _merge_and_save_policy(
+        signals=signals,
+        auto_policy_path=auto_policy_path,
+        min_count=min_count,
+        max_keywords_per_bucket=max_keywords_per_bucket,
+    )
+
     mailbox_thresholds = _build_mailbox_thresholds(settings, quality_payload)
     mailbox_thresholds_path.parent.mkdir(parents=True, exist_ok=True)
     mailbox_thresholds_path.write_text(json.dumps(mailbox_thresholds, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
-    generated_sieve_dir.mkdir(parents=True, exist_ok=True)
-    generated_files: list[str] = []
-    for mailbox in settings.load_mailboxes():
-        content = _render(mailbox, merged)
-        path = generated_sieve_dir / f"{mailbox.mailbox_id}.main.sieve"
-        path.write_text(content, encoding="utf-8")
-        generated_files.append(str(path))
+    generated_files = _generate_sieve_scripts(
+        settings=settings,
+        merged_policy=merged,
+        generated_sieve_dir=generated_sieve_dir,
+    )
 
     learning_output_dir.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
@@ -284,62 +381,17 @@ def run_weekly_autotune(
 
     deploy_payload: dict[str, Any] | None = None
     if deploy:
-        mailbox_ids = [mailbox.mailbox_id for mailbox in settings.load_mailboxes()]
-        canary_count = min(max(deploy_canary_count, 0), len(mailbox_ids))
-        canary_ids = mailbox_ids[:canary_count]
-        rest_ids = mailbox_ids[canary_count:]
-        canary_results = []
-        full_results = []
-        rollout_aborted = False
-        rollout_abort_reason = None
-        if canary_ids:
-            canary_results = deploy_all(
-                settings=settings,
-                input_dir=generated_sieve_dir,
-                script_name="main.sieve",
-                port=deploy_port,
-                timeout_seconds=deploy_timeout_seconds,
-                tls_mode=deploy_tls_mode,
-                strict_verify=deploy_strict_verify,
-                mailbox_ids=canary_ids,
-            )
-            canary_verified = all(item.verified for item in canary_results) if canary_results else True
-            soft_pass_count = sum(1 for item in canary_results if item.verification_mode == "soft_pass")
-            soft_pass_share = (soft_pass_count / len(canary_results)) if canary_results else 0.0
-            if (not canary_verified) or (soft_pass_share > deploy_canary_max_soft_pass_share):
-                rollout_aborted = True
-                rollout_abort_reason = (
-                    f"canary gate failed: verified={canary_verified}, "
-                    f"soft_pass_share={soft_pass_share:.4f}, "
-                    f"max_soft_pass_share={deploy_canary_max_soft_pass_share:.4f}"
-                )
-        if not rollout_aborted and rest_ids:
-            full_results = deploy_all(
-                settings=settings,
-                input_dir=generated_sieve_dir,
-                script_name="main.sieve",
-                port=deploy_port,
-                timeout_seconds=deploy_timeout_seconds,
-                tls_mode=deploy_tls_mode,
-                strict_verify=deploy_strict_verify,
-                mailbox_ids=rest_ids,
-            )
-        all_results = canary_results + full_results
-        deploy_payload = {
-            "ok": sum(1 for x in all_results if x.verified),
-            "failed": sum(1 for x in all_results if not x.verified),
-            "rollout_aborted": rollout_aborted,
-            "rollout_abort_reason": rollout_abort_reason,
-            "canary": {
-                "mailbox_ids": canary_ids,
-                "results": [x.__dict__ for x in canary_results],
-            },
-            "full": {
-                "mailbox_ids": rest_ids,
-                "results": [x.__dict__ for x in full_results],
-            },
-            "results": [x.__dict__ for x in all_results],
-        }
+        deploy_payload = _execute_deployment(
+            settings=settings,
+            generated_sieve_dir=generated_sieve_dir,
+            deploy_port=deploy_port,
+            deploy_timeout_seconds=deploy_timeout_seconds,
+            deploy_tls_mode=deploy_tls_mode,
+            deploy_strict_verify=deploy_strict_verify,
+            deploy_canary_count=deploy_canary_count,
+            deploy_canary_max_soft_pass_share=deploy_canary_max_soft_pass_share,
+        )
+
     learning_payload["deploy"] = deploy_payload
     learning_json.write_text(json.dumps(learning_payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 

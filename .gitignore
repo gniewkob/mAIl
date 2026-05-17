@@ -38,3 +38,4 @@ docs/
 plan.md
 testy.md
 *.bak.*
+*.egg-info/
