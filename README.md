@@ -308,10 +308,16 @@ Historical reference:
 
 ## Tests
 
-Run unit tests:
+Primary local test runner (recommended for this repo):
 
 ```bash
-uv run --extra dev pytest -q
+uv run python -m pytest tests/
+```
+
+Equivalent shortcut:
+
+```bash
+make test
 ```
 
 Run the live Ollama integration test:
@@ -332,6 +338,20 @@ LIVE_IMAP_SOURCE_FOLDER=INBOX.Test-AI-Review \
 ```
 
 Do not point live IMAP tests at a production source folder.
+
+## AI Branch Sweep
+
+Discovery/review report for AI-generated branches and open PR heads:
+
+```bash
+make ai-branch-sweep
+```
+
+Delete only patch-duplicate AI branches that have no open PR:
+
+```bash
+make ai-branch-sweep-clean
+```
 
 ## Status
 
