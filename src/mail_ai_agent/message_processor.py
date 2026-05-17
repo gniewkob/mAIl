@@ -478,7 +478,7 @@ class MessageProcessor:
         if not cleaned:
             cleaned = self.cleanup_handler.try_cleanup_processed_conflict(
                 candidate, mailbox, imap, lease,
-                parsed.message_id, fingerprint, content_fingerprint, sender, subject
+                parsed.message_id, fingerprint, content_fingerprint, sender or "", subject or ""
             )
         
         if cleaned:
@@ -569,10 +569,18 @@ class MessageProcessor:
         
         # Execute IMAP routing
         if not self.settings.dry_run:
-            result = self._execute_routing(
-                candidate, mailbox, imap, parsed, fingerprint, record, decision, draft_path, rule, latency_ms
-            )
-            return result
+            if decision.final_status == WorkflowStatus.UNCERTAIN:
+                return self._route_uncertain(
+                    candidate, mailbox, imap, parsed, fingerprint, record, decision, draft_path, started
+                )
+            elif rule.action == "needs_llm":
+                return self._route_llm(
+                    candidate, mailbox, imap, parsed, fingerprint, record, decision, draft_path, started, latency_ms
+                )
+            else:
+                return self._route_rule(
+                    candidate, mailbox, imap, parsed, fingerprint, record, decision, draft_path, started, rule
+                )
         
         # Dry run - just return simulated result
         duration_ms = int((perf_counter() - started) * 1000)
@@ -587,7 +595,8 @@ class MessageProcessor:
             error=None,
         )
     
-    def _execute_routing(
+
+    def _perform_imap_routing(
         self,
         candidate: CandidateMessage,
         mailbox: MailboxConfig,
@@ -597,110 +606,226 @@ class MessageProcessor:
         record: "EmailRecord",
         decision: FinalDecision,
         draft_path: str | None,
-        rule: "RuleDecision",
-        llm_latency_ms: int | None,
-    ) -> ProcessingResult:
-        """Execute the actual IMAP routing."""
-        started = perf_counter()
-        
+    ) -> str | None | ProcessingResult:
+        """Perform IMAP flag setting, copy, and source deletion.
+
+        Returns the target UID if successful, or a ProcessingResult if source cleanup fails.
+        """
+        # Set flags if needed
+        if decision.flags:
+            imap.set_flagged(mailbox.imap_source_folder, candidate.uid)
+
+        # Copy message
+        target_uid = imap.copy_message(
+            mailbox.imap_source_folder,
+            candidate.uid,
+            decision.target_folder,
+        )
+
+        # Delete source
         try:
-            # Set flags if needed
-            if decision.flags:
-                imap.set_flagged(mailbox.imap_source_folder, candidate.uid)
-            
-            # Copy message
-            target_uid = imap.copy_message(
-                mailbox.imap_source_folder,
-                candidate.uid,
-                decision.target_folder,
+            imap.delete_message(mailbox.imap_source_folder, candidate.uid)
+            return target_uid
+        except Exception as exc:
+            LOGGER.exception("Copy succeeded but source cleanup failed")
+            return self._handle_cleanup_failure(
+                candidate, mailbox, parsed, fingerprint, record, decision, draft_path, target_uid, exc
             )
+
+    def _log_and_return_success(
+        self,
+        candidate: CandidateMessage,
+        mailbox: MailboxConfig,
+        parsed: ParsedEmail,
+        fingerprint: str,
+        decision: FinalDecision,
+        draft_path: str | None,
+        effective_action: str,
+        duration_ms: int,
+    ) -> ProcessingResult:
+        """Log successful routing to audit and return ProcessingResult."""
+        self.audit.log(
+            level="INFO",
+            mailbox_id=mailbox.mailbox_id,
+            mailbox_user=mailbox.imap_user,
+            source_folder=mailbox.imap_source_folder,
+            message_id=parsed.message_id,
+            fingerprint=fingerprint,
+            imap_uid=candidate.uid,
+            sender=parsed.sender,
+            subject=parsed.subject,
+            status_before="processing",
+            status_after=decision.final_status.value,
+            category=decision.category,
+            confidence=decision.confidence,
+            action_taken=effective_action,
+            target_folder=decision.target_folder,
+            draft_path=draft_path,
+            duration_ms=duration_ms,
+            error=None,
+            dry_run=False,
+        )
+        
+        return ProcessingResult(
+            action_taken=effective_action,
+            final_status=decision.final_status,
+            category=decision.category,
+            confidence=decision.confidence,
+            target_folder=decision.target_folder,
+            draft_path=draft_path,
+            latency_ms=duration_ms,
+            error=None,
+        )
+
+    def _handle_routing_error(
+        self,
+        record: "EmailRecord",
+        decision: FinalDecision,
+        draft_path: str | None,
+        started: float,
+        exc: Exception,
+    ) -> ProcessingResult:
+        """Handle generic exception during routing."""
+        LOGGER.exception("Routing execution failed")
+        duration_ms = int((perf_counter() - started) * 1000)
+        self.state.mark_failed(record.id, error_message=str(exc), error_type=exc.__class__.__name__)
+        return ProcessingResult(
+            action_taken=ActionTaken.FAILED,
+            final_status=WorkflowStatus.FAILED,
+            category=None,
+            confidence=None,
+            target_folder=None,
+            draft_path=draft_path,
+            latency_ms=duration_ms,
+            error=str(exc),
+        )
+
+    def _route_uncertain(
+        self,
+        candidate: CandidateMessage,
+        mailbox: MailboxConfig,
+        imap: IMAPClient,
+        parsed: ParsedEmail,
+        fingerprint: str,
+        record: "EmailRecord",
+        decision: FinalDecision,
+        draft_path: str | None,
+        started: float,
+    ) -> ProcessingResult:
+        """Route to uncertain folder for fallback."""
+        try:
+            target_uid_or_result = self._perform_imap_routing(
+                candidate, mailbox, imap, parsed, fingerprint, record, decision, draft_path
+            )
+            if isinstance(target_uid_or_result, ProcessingResult):
+                return target_uid_or_result
             
-            # Delete source
-            try:
-                imap.delete_message(mailbox.imap_source_folder, candidate.uid)
-            except Exception as exc:
-                LOGGER.exception("Copy succeeded but source cleanup failed")
-                return self._handle_cleanup_failure(
-                    candidate, mailbox, parsed, fingerprint, record, decision, draft_path, target_uid, exc
-                )
-            
-            # Mark as processed/uncertain
+            target_uid = target_uid_or_result
             duration_ms = int((perf_counter() - started) * 1000)
-            
-            # Determine effective action taken (with move_ prefix for production)
             effective_action = f"move_{decision.action_taken}"
             
-            if decision.final_status == WorkflowStatus.UNCERTAIN:
-                self.state.mark_uncertain(
-                    record.id,
-                    category=decision.category,
-                    confidence=decision.confidence,
-                    target_folder=decision.target_folder,
-                    target_uid=target_uid,
-                    action_taken=effective_action,
-                )
-            else:
-                self.state.mark_processed(
-                    record.id,
-                    category=decision.category,
-                    confidence=decision.confidence,
-                    target_folder=decision.target_folder,
-                    target_uid=target_uid,
-                    action_taken=effective_action,
-                    draft_path=draft_path,
-                    rule_hit=rule.reason if rule.action != "needs_llm" else None,
-                    model_name=self.settings.ollama_model if decision.action_taken == "route_from_llm" else None,
-                    model_latency_ms=llm_latency_ms,
-                )
-            
-            # Audit log the successful processing
-            self.audit.log(
-                level="INFO",
-                mailbox_id=mailbox.mailbox_id,
-                mailbox_user=mailbox.imap_user,
-                source_folder=mailbox.imap_source_folder,
-                message_id=parsed.message_id,
-                fingerprint=fingerprint,
-                imap_uid=candidate.uid,
-                sender=parsed.sender,
-                subject=parsed.subject,
-                status_before="processing",
-                status_after=decision.final_status.value,
-                category=decision.category,
-                confidence=decision.confidence,
-                action_taken=effective_action,
-                target_folder=decision.target_folder,
-                draft_path=draft_path,
-                duration_ms=duration_ms,
-                error=None,
-                dry_run=False,
-            )
-            
-            return ProcessingResult(
-                action_taken=effective_action,
-                final_status=decision.final_status,
+            self.state.mark_uncertain(
+                record.id,
                 category=decision.category,
                 confidence=decision.confidence,
                 target_folder=decision.target_folder,
-                draft_path=draft_path,
-                latency_ms=duration_ms,
-                error=None,
+                target_uid=target_uid,
+                action_taken=effective_action,
             )
             
+            return self._log_and_return_success(
+                candidate, mailbox, parsed, fingerprint, decision, draft_path, effective_action, duration_ms
+            )
         except Exception as exc:
-            LOGGER.exception("Routing execution failed")
-            duration_ms = int((perf_counter() - started) * 1000)
-            self.state.mark_failed(record.id, error_message=str(exc), error_type=exc.__class__.__name__)
-            return ProcessingResult(
-                action_taken=ActionTaken.FAILED,
-                final_status=WorkflowStatus.FAILED,
-                category=None,
-                confidence=None,
-                target_folder=None,
-                draft_path=draft_path,
-                latency_ms=duration_ms,
-                error=str(exc),
+            return self._handle_routing_error(record, decision, draft_path, started, exc)
+
+    def _route_rule(
+        self,
+        candidate: CandidateMessage,
+        mailbox: MailboxConfig,
+        imap: IMAPClient,
+        parsed: ParsedEmail,
+        fingerprint: str,
+        record: "EmailRecord",
+        decision: FinalDecision,
+        draft_path: str | None,
+        started: float,
+        rule: "RuleDecision",
+    ) -> ProcessingResult:
+        """Route based on evaluated rules."""
+        try:
+            target_uid_or_result = self._perform_imap_routing(
+                candidate, mailbox, imap, parsed, fingerprint, record, decision, draft_path
             )
+            if isinstance(target_uid_or_result, ProcessingResult):
+                return target_uid_or_result
+
+            target_uid = target_uid_or_result
+            duration_ms = int((perf_counter() - started) * 1000)
+            effective_action = f"move_{decision.action_taken}"
+
+            self.state.mark_processed(
+                record.id,
+                category=decision.category,
+                confidence=decision.confidence,
+                target_folder=decision.target_folder,
+                target_uid=target_uid,
+                action_taken=effective_action,
+                draft_path=draft_path,
+                rule_hit=rule.reason,
+                model_name=None,
+                model_latency_ms=None,
+            )
+            
+            return self._log_and_return_success(
+                candidate, mailbox, parsed, fingerprint, decision, draft_path, effective_action, duration_ms
+            )
+        except Exception as exc:
+            return self._handle_routing_error(record, decision, draft_path, started, exc)
+
+    def _route_llm(
+        self,
+        candidate: CandidateMessage,
+        mailbox: MailboxConfig,
+        imap: IMAPClient,
+        parsed: ParsedEmail,
+        fingerprint: str,
+        record: "EmailRecord",
+        decision: FinalDecision,
+        draft_path: str | None,
+        started: float,
+        llm_latency_ms: int | None,
+    ) -> ProcessingResult:
+        """Route based on LLM classification."""
+        try:
+            target_uid_or_result = self._perform_imap_routing(
+                candidate, mailbox, imap, parsed, fingerprint, record, decision, draft_path
+            )
+            if isinstance(target_uid_or_result, ProcessingResult):
+                return target_uid_or_result
+
+            target_uid = target_uid_or_result
+            duration_ms = int((perf_counter() - started) * 1000)
+            effective_action = f"move_{decision.action_taken}"
+
+            self.state.mark_processed(
+                record.id,
+                category=decision.category,
+                confidence=decision.confidence,
+                target_folder=decision.target_folder,
+                target_uid=target_uid,
+                action_taken=effective_action,
+                draft_path=draft_path,
+                rule_hit=None,
+                model_name=self.settings.ollama_model,
+                model_latency_ms=llm_latency_ms,
+            )
+
+            return self._log_and_return_success(
+                candidate, mailbox, parsed, fingerprint, decision, draft_path, effective_action, duration_ms
+            )
+        except Exception as exc:
+            return self._handle_routing_error(record, decision, draft_path, started, exc)
     
     def _handle_cleanup_failure(
         self,
