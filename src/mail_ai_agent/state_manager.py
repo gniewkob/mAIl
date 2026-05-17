@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 import sqlite3
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
@@ -82,16 +81,31 @@ class StateManager:
                 );
                 """
             )
-            columns = {row["name"] for row in conn.execute("PRAGMA table_info(email_processing_state)").fetchall()}
+            columns = {
+                row["name"]
+                for row in conn.execute(
+                    "PRAGMA table_info(email_processing_state)"
+                ).fetchall()
+            }
             if "mailbox_id" not in columns:
-                conn.execute("ALTER TABLE email_processing_state ADD COLUMN mailbox_id TEXT NOT NULL DEFAULT 'default'")
+                conn.execute(
+                    "ALTER TABLE email_processing_state ADD COLUMN mailbox_id TEXT NOT NULL DEFAULT 'default'"
+                )
             if "content_fingerprint" not in columns:
-                conn.execute("ALTER TABLE email_processing_state ADD COLUMN content_fingerprint TEXT")
+                conn.execute(
+                    "ALTER TABLE email_processing_state ADD COLUMN content_fingerprint TEXT"
+                )
             if "sender_sha256" not in columns:
-                conn.execute("ALTER TABLE email_processing_state ADD COLUMN sender_sha256 TEXT")
+                conn.execute(
+                    "ALTER TABLE email_processing_state ADD COLUMN sender_sha256 TEXT"
+                )
             if "subject_sha256" not in columns:
-                conn.execute("ALTER TABLE email_processing_state ADD COLUMN subject_sha256 TEXT")
-            conn.execute("UPDATE email_processing_state SET mailbox_id = 'default' WHERE mailbox_id IS NULL OR mailbox_id = ''")
+                conn.execute(
+                    "ALTER TABLE email_processing_state ADD COLUMN subject_sha256 TEXT"
+                )
+            conn.execute(
+                "UPDATE email_processing_state SET mailbox_id = 'default' WHERE mailbox_id IS NULL OR mailbox_id = ''"
+            )
             conn.executescript(
                 """
                 DROP INDEX IF EXISTS idx_email_fingerprint;
@@ -110,7 +124,9 @@ class StateManager:
                 """
             )
 
-    def acquire_worker_lock(self, *, worker_id: str, lease_seconds: int) -> WorkerLockResult:
+    def acquire_worker_lock(
+        self, *, worker_id: str, lease_seconds: int
+    ) -> WorkerLockResult:
         now = datetime.now(timezone.utc)
         expires_at = now + timedelta(seconds=lease_seconds)
         with self._managed_connection() as conn:
@@ -127,7 +143,9 @@ class StateManager:
                     """,
                     ("main", worker_id, expires_at.isoformat(), now.isoformat()),
                 )
-                return WorkerLockResult(acquired=True, lock_owner=worker_id, reason="worker lock acquired")
+                return WorkerLockResult(
+                    acquired=True, lock_owner=worker_id, reason="worker lock acquired"
+                )
 
             current_expires_at = datetime.fromisoformat(row["lock_expires_at"])
             if current_expires_at > now and row["lock_owner"] != worker_id:
@@ -145,7 +163,9 @@ class StateManager:
                 """,
                 (worker_id, expires_at.isoformat(), now.isoformat(), "main"),
             )
-            return WorkerLockResult(acquired=True, lock_owner=worker_id, reason="worker lock refreshed")
+            return WorkerLockResult(
+                acquired=True, lock_owner=worker_id, reason="worker lock refreshed"
+            )
 
     def release_worker_lock(self, *, worker_id: str) -> None:
         with self._managed_connection() as conn:
@@ -177,11 +197,15 @@ class StateManager:
         expires_at = now + timedelta(seconds=lease_seconds)
         with self._managed_connection() as conn:
             conn.execute("BEGIN EXCLUSIVE")
-            identity_rows = self._lookup_identity_rows(conn, mailbox_id, message_id, fingerprint, content_fingerprint)
+            identity_rows = self._lookup_identity_rows(
+                conn, mailbox_id, message_id, fingerprint, content_fingerprint
+            )
             if self._is_identity_conflict(identity_rows):
                 row = next((row for row in identity_rows if row is not None), None)
                 if row is None:
-                    raise RuntimeError("Identity conflict detected but no matching row found")
+                    raise RuntimeError(
+                        "Identity conflict detected but no matching row found"
+                    )
                 return LeaseAcquireResult(
                     outcome="conflict",
                     record=self._row_to_record(row),
@@ -192,111 +216,86 @@ class StateManager:
             if row is not None:
                 record = self._row_to_record(row)
                 if self._is_uidvalidity_mismatch(record, uidvalidity):
-                    return LeaseAcquireResult(outcome="conflict", record=record, reason="uidvalidity changed")
+                    return LeaseAcquireResult(
+                        outcome="conflict", record=record, reason="uidvalidity changed"
+                    )
                 if self._is_message_mismatch(record, message_id, fingerprint):
-                    return LeaseAcquireResult(outcome="conflict", record=record, reason="message identity conflict")
-                if record.status in {WorkflowStatus.PROCESSED, WorkflowStatus.SKIPPED, WorkflowStatus.UNCERTAIN}:
-                    return LeaseAcquireResult(outcome="already_done", record=record, reason=f"message already {record.status.value}")
+                    return LeaseAcquireResult(
+                        outcome="conflict",
+                        record=record,
+                        reason="message identity conflict",
+                    )
+                if record.status in {
+                    WorkflowStatus.PROCESSED,
+                    WorkflowStatus.SKIPPED,
+                    WorkflowStatus.UNCERTAIN,
+                }:
+                    return LeaseAcquireResult(
+                        outcome="already_done",
+                        record=record,
+                        reason=f"message already {record.status.value}",
+                    )
                 if record.status == WorkflowStatus.CLEANUP_PENDING:
                     return LeaseAcquireResult(
                         outcome="already_done",
                         record=record,
                         reason="message copied already; source cleanup pending",
                     )
-                if record.attempt_count >= max_retries and record.status in {WorkflowStatus.FAILED, WorkflowStatus.PROCESSING}:
-                    return LeaseAcquireResult(outcome="already_done", record=record, reason="max retries exceeded")
-                if record.status == WorkflowStatus.PROCESSING and record.lock_expires_at:
+                if record.attempt_count >= max_retries and record.status in {
+                    WorkflowStatus.FAILED,
+                    WorkflowStatus.PROCESSING,
+                }:
+                    return LeaseAcquireResult(
+                        outcome="already_done",
+                        record=record,
+                        reason="max retries exceeded",
+                    )
+                if (
+                    record.status == WorkflowStatus.PROCESSING
+                    and record.lock_expires_at
+                ):
                     lock_expires_at = datetime.fromisoformat(record.lock_expires_at)
                     if lock_expires_at > now:
-                        return LeaseAcquireResult(outcome="locked", record=record, reason="active lease exists")
+                        return LeaseAcquireResult(
+                            outcome="locked",
+                            record=record,
+                            reason="active lease exists",
+                        )
 
-                attempt_count = record.attempt_count + 1
-                conn.execute(
-                    """
-                    UPDATE email_processing_state
-                    SET status = ?, imap_uid = ?, uidvalidity = ?, source_folder = ?, sender = ?, sender_sha256 = ?,
-                        subject = ?, subject_sha256 = ?, content_fingerprint = ?,
-                        internaldate = ?, processing_started_at = ?, lock_expires_at = ?,
-                        lock_owner = ?, attempt_count = ?, updated_at = ?
-                    WHERE id = ?
-                    """,
-                    (
-                        WorkflowStatus.PROCESSING.value,
-                        imap_uid,
-                        uidvalidity,
-                        source_folder,
-                        sender,
-                        sender_sha256 or _hash_value(sender),
-                        subject,
-                        subject_sha256 or _hash_value(subject),
-                        content_fingerprint,
-                        internaldate,
-                        now.isoformat(),
-                        expires_at.isoformat(),
-                        worker_id,
-                        attempt_count,
-                        now.isoformat(),
-                        record.id,
-                    ),
-                )
-                updated_row = conn.execute("SELECT * FROM email_processing_state WHERE id = ?", (record.id,)).fetchone()
-                return LeaseAcquireResult(
-                    outcome="acquired",
-                    record=self._row_to_record(updated_row),
-                    reason="lease acquired",
+                return self._update_existing_lease(
+                    conn=conn,
+                    record=record,
+                    now=now,
+                    expires_at=expires_at,
+                    worker_id=worker_id,
+                    imap_uid=imap_uid,
+                    uidvalidity=uidvalidity,
+                    source_folder=source_folder,
+                    sender=sender,
+                    sender_sha256=sender_sha256,
+                    subject=subject,
+                    subject_sha256=subject_sha256,
+                    content_fingerprint=content_fingerprint,
+                    internaldate=internaldate,
                 )
 
-            try:
-                cursor = conn.execute(
-                    """
-                    INSERT INTO email_processing_state (
-                        mailbox_id, message_id, fingerprint, content_fingerprint, imap_uid, uidvalidity, source_folder,
-                        sender, sender_sha256, subject, subject_sha256, internaldate,
-                        status, processing_started_at, lock_expires_at, lock_owner, attempt_count,
-                        created_at, updated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        mailbox_id,
-                        message_id,
-                        fingerprint,
-                        content_fingerprint,
-                        imap_uid,
-                        uidvalidity,
-                        source_folder,
-                        sender,
-                        sender_sha256 or _hash_value(sender),
-                        subject,
-                        subject_sha256 or _hash_value(subject),
-                        internaldate,
-                        WorkflowStatus.PROCESSING.value,
-                        now.isoformat(),
-                        expires_at.isoformat(),
-                        worker_id,
-                        1,
-                        now.isoformat(),
-                        now.isoformat(),
-                    ),
-                )
-            except sqlite3.IntegrityError:
-                # IntegrityError can indicate a UNIQUE-constraint violation from a concurrent insert
-                # race (the primary defence), but may also arise from other constraint failures.
-                # We attempt a fresh lookup; if a matching row is found it was a race and we return
-                # "locked". If no row is found the error is from a different constraint — the re-raise
-                # below is the safety net for those cases.
-                conflict_row = self._lookup_identity_rows(conn, mailbox_id, message_id, fingerprint, content_fingerprint)
-                row = next((r for r in conflict_row if r is not None), None)
-                if row is not None:
-                    return LeaseAcquireResult(outcome="locked", record=self._row_to_record(row), reason="concurrent insert collision")
-                raise
-            inserted_row = conn.execute(
-                "SELECT * FROM email_processing_state WHERE id = ?",
-                (cursor.lastrowid,),
-            ).fetchone()
-            return LeaseAcquireResult(
-                outcome="acquired",
-                record=self._row_to_record(inserted_row),
-                reason="new message acquired",
+            return self._insert_new_lease(
+                conn=conn,
+                now=now,
+                expires_at=expires_at,
+                worker_id=worker_id,
+                mailbox_id=mailbox_id,
+                message_id=message_id,
+                fingerprint=fingerprint,
+                content_fingerprint=content_fingerprint,
+                imap_uid=imap_uid,
+                uidvalidity=uidvalidity,
+                source_folder=source_folder,
+                sender=sender,
+                sender_sha256=sender_sha256,
+                subject=subject,
+                subject_sha256=subject_sha256,
+                internaldate=internaldate,
             )
 
     def mark_processed(
@@ -356,7 +355,9 @@ class StateManager:
             model_latency_ms=None,
         )
 
-    def mark_failed(self, record_id: int, *, error_message: str, error_type: str) -> None:
+    def mark_failed(
+        self, record_id: int, *, error_message: str, error_type: str
+    ) -> None:
         self._update_terminal(
             record_id,
             status=WorkflowStatus.FAILED,
@@ -406,10 +407,14 @@ class StateManager:
 
     def get_by_id(self, record_id: int) -> EmailRecord | None:
         with self._managed_connection() as conn:
-            row = conn.execute("SELECT * FROM email_processing_state WHERE id = ?", (record_id,)).fetchone()
+            row = conn.execute(
+                "SELECT * FROM email_processing_state WHERE id = ?", (record_id,)
+            ).fetchone()
         return self._row_to_record(row) if row else None
 
-    def get_by_message_id(self, mailbox_id: str, message_id: str | None) -> EmailRecord | None:
+    def get_by_message_id(
+        self, mailbox_id: str, message_id: str | None
+    ) -> EmailRecord | None:
         if message_id is None:
             return None
         with self._managed_connection() as conn:
@@ -419,7 +424,9 @@ class StateManager:
             ).fetchone()
         return self._row_to_record(row) if row else None
 
-    def get_by_fingerprint(self, mailbox_id: str, fingerprint: str) -> EmailRecord | None:
+    def get_by_fingerprint(
+        self, mailbox_id: str, fingerprint: str
+    ) -> EmailRecord | None:
         with self._managed_connection() as conn:
             row = conn.execute(
                 "SELECT * FROM email_processing_state WHERE mailbox_id = ? AND fingerprint = ?",
@@ -436,7 +443,9 @@ class StateManager:
         content_fingerprint: str | None = None,
     ) -> list[EmailRecord]:
         with self._managed_connection() as conn:
-            rows = self._lookup_identity_rows(conn, mailbox_id, message_id, fingerprint, content_fingerprint)
+            rows = self._lookup_identity_rows(
+                conn, mailbox_id, message_id, fingerprint, content_fingerprint
+            )
         records: list[EmailRecord] = []
         seen_ids: set[int] = set()
         for row in rows:
@@ -449,7 +458,9 @@ class StateManager:
             records.append(self._row_to_record(row))
         return records
 
-    def list_cleanup_candidates(self, *, mailbox_id: str, source_folder: str) -> list[EmailRecord]:
+    def list_cleanup_candidates(
+        self, *, mailbox_id: str, source_folder: str
+    ) -> list[EmailRecord]:
         with self._managed_connection() as conn:
             rows = conn.execute(
                 """
@@ -469,7 +480,9 @@ class StateManager:
             ).fetchall()
         return [self._row_to_record(row) for row in rows]
 
-    def list_by_status(self, *, status: WorkflowStatus, mailbox_id: str | None = None) -> list[EmailRecord]:
+    def list_by_status(
+        self, *, status: WorkflowStatus, mailbox_id: str | None = None
+    ) -> list[EmailRecord]:
         with self._managed_connection() as conn:
             if mailbox_id is None:
                 rows = conn.execute(
@@ -485,7 +498,9 @@ class StateManager:
 
     def delete_record(self, record_id: int) -> None:
         with self._managed_connection() as conn:
-            conn.execute("DELETE FROM email_processing_state WHERE id = ?", (record_id,))
+            conn.execute(
+                "DELETE FROM email_processing_state WHERE id = ?", (record_id,)
+            )
 
     def delete_identity_matches(
         self,
@@ -592,11 +607,22 @@ class StateManager:
         ids = {row["id"] for row in rows if row is not None}
         return len(ids) > 1
 
-    def _is_message_mismatch(self, record: EmailRecord, message_id: str | None, fingerprint: str) -> bool:
-        return bool(message_id and record.message_id and record.message_id == message_id and record.fingerprint != fingerprint)
+    def _is_message_mismatch(
+        self, record: EmailRecord, message_id: str | None, fingerprint: str
+    ) -> bool:
+        return bool(
+            message_id
+            and record.message_id
+            and record.message_id == message_id
+            and record.fingerprint != fingerprint
+        )
 
-    def _is_uidvalidity_mismatch(self, record: EmailRecord, uidvalidity: str | None) -> bool:
-        return bool(record.uidvalidity and uidvalidity and record.uidvalidity != uidvalidity)
+    def _is_uidvalidity_mismatch(
+        self, record: EmailRecord, uidvalidity: str | None
+    ) -> bool:
+        return bool(
+            record.uidvalidity and uidvalidity and record.uidvalidity != uidvalidity
+        )
 
     def _update_terminal(
         self,
@@ -644,6 +670,139 @@ class StateManager:
                     record_id,
                 ),
             )
+
+    def _update_existing_lease(
+        self,
+        conn: sqlite3.Connection,
+        record: EmailRecord,
+        now: datetime,
+        expires_at: datetime,
+        worker_id: str,
+        imap_uid: str,
+        uidvalidity: str | None,
+        source_folder: str,
+        sender: str,
+        sender_sha256: str | None,
+        subject: str,
+        subject_sha256: str | None,
+        content_fingerprint: str | None,
+        internaldate: str | None,
+    ) -> LeaseAcquireResult:
+        attempt_count = record.attempt_count + 1
+        conn.execute(
+            """
+            UPDATE email_processing_state
+            SET status = ?, imap_uid = ?, uidvalidity = ?, source_folder = ?, sender = ?, sender_sha256 = ?,
+                subject = ?, subject_sha256 = ?, content_fingerprint = ?,
+                internaldate = ?, processing_started_at = ?, lock_expires_at = ?,
+                lock_owner = ?, attempt_count = ?, updated_at = ?
+            WHERE id = ?
+            """,
+            (
+                WorkflowStatus.PROCESSING.value,
+                imap_uid,
+                uidvalidity,
+                source_folder,
+                sender,
+                sender_sha256 or _hash_value(sender),
+                subject,
+                subject_sha256 or _hash_value(subject),
+                content_fingerprint,
+                internaldate,
+                now.isoformat(),
+                expires_at.isoformat(),
+                worker_id,
+                attempt_count,
+                now.isoformat(),
+                record.id,
+            ),
+        )
+        updated_row = conn.execute(
+            "SELECT * FROM email_processing_state WHERE id = ?", (record.id,)
+        ).fetchone()
+        return LeaseAcquireResult(
+            outcome="acquired",
+            record=self._row_to_record(updated_row),
+            reason="lease acquired",
+        )
+
+    def _insert_new_lease(
+        self,
+        conn: sqlite3.Connection,
+        now: datetime,
+        expires_at: datetime,
+        worker_id: str,
+        mailbox_id: str,
+        message_id: str | None,
+        fingerprint: str,
+        content_fingerprint: str | None,
+        imap_uid: str,
+        uidvalidity: str | None,
+        source_folder: str,
+        sender: str,
+        sender_sha256: str | None,
+        subject: str,
+        subject_sha256: str | None,
+        internaldate: str | None,
+    ) -> LeaseAcquireResult:
+        try:
+            cursor = conn.execute(
+                """
+                INSERT INTO email_processing_state (
+                    mailbox_id, message_id, fingerprint, content_fingerprint, imap_uid, uidvalidity, source_folder,
+                    sender, sender_sha256, subject, subject_sha256, internaldate,
+                    status, processing_started_at, lock_expires_at, lock_owner, attempt_count,
+                    created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    mailbox_id,
+                    message_id,
+                    fingerprint,
+                    content_fingerprint,
+                    imap_uid,
+                    uidvalidity,
+                    source_folder,
+                    sender,
+                    sender_sha256 or _hash_value(sender),
+                    subject,
+                    subject_sha256 or _hash_value(subject),
+                    internaldate,
+                    WorkflowStatus.PROCESSING.value,
+                    now.isoformat(),
+                    expires_at.isoformat(),
+                    worker_id,
+                    1,
+                    now.isoformat(),
+                    now.isoformat(),
+                ),
+            )
+        except sqlite3.IntegrityError:
+            # IntegrityError can indicate a UNIQUE-constraint violation from a concurrent insert
+            # race (the primary defence), but may also arise from other constraint failures.
+            # We attempt a fresh lookup; if a matching row is found it was a race and we return
+            # "locked". If no row is found the error is from a different constraint — the re-raise
+            # below is the safety net for those cases.
+            conflict_row = self._lookup_identity_rows(
+                conn, mailbox_id, message_id, fingerprint, content_fingerprint
+            )
+            row = next((r for r in conflict_row if r is not None), None)
+            if row is not None:
+                return LeaseAcquireResult(
+                    outcome="locked",
+                    record=self._row_to_record(row),
+                    reason="concurrent insert collision",
+                )
+            raise
+        inserted_row = conn.execute(
+            "SELECT * FROM email_processing_state WHERE id = ?",
+            (cursor.lastrowid,),
+        ).fetchone()
+        return LeaseAcquireResult(
+            outcome="acquired",
+            record=self._row_to_record(inserted_row),
+            reason="new message acquired",
+        )
 
     @staticmethod
     def _row_to_record(row: sqlite3.Row) -> EmailRecord:
