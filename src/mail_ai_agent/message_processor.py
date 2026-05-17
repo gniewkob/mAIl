@@ -220,82 +220,83 @@ class MessageProcessor:
         
         return decide_from_llm(classification, self.settings, mailbox)
     
-    def _handle_parse_failure(
+    def _log_dry_run_parse_failure(
         self,
         candidate: CandidateMessage,
         mailbox: MailboxConfig,
-        imap: IMAPClient,
-        started: float,
+        fingerprint: str,
+        duration_ms: int,
         exc: Exception,
     ) -> ProcessingResult:
-        """Handle email parsing failure by quarantining to uncertain folder."""
-        fingerprint = hashlib.sha256(candidate.raw_bytes).hexdigest()
-        duration_ms = int((perf_counter() - started) * 1000)
-        
-        if self.settings.dry_run:
-            self.audit.log(
-                level="ERROR",
-                mailbox_id=mailbox.mailbox_id,
-                mailbox_user=mailbox.imap_user,
-                source_folder=mailbox.imap_source_folder,
-                message_id=candidate.message_id,
-                fingerprint=fingerprint,
-                imap_uid=candidate.uid,
-                status_before=None,
-                status_after="failed",
-                action_taken=ActionTaken.FAILED_PARSE,
-                duration_ms=duration_ms,
-                error=str(exc),
-                dry_run=True,
-            )
-            return ProcessingResult(
-                action_taken=ActionTaken.FAILED_PARSE,
-                final_status=WorkflowStatus.FAILED,
-                category=None,
-                confidence=None,
-                target_folder=None,
-                draft_path=None,
-                latency_ms=duration_ms,
-                error=str(exc),
-            )
-        
-        # In production, try to quarantine
-        quarantine_result = self._try_quarantine_parse_failure(
-            candidate, mailbox, imap, fingerprint, exc
+        self.audit.log(
+            level="ERROR",
+            mailbox_id=mailbox.mailbox_id,
+            mailbox_user=mailbox.imap_user,
+            source_folder=mailbox.imap_source_folder,
+            message_id=candidate.message_id,
+            fingerprint=fingerprint,
+            imap_uid=candidate.uid,
+            status_before=None,
+            status_after="failed",
+            action_taken=ActionTaken.FAILED_PARSE,
+            duration_ms=duration_ms,
+            error=str(exc),
+            dry_run=True,
         )
-        
-        if quarantine_result is None:
-            # Message already processed (likely already quarantined)
-            # Log and return skip result
-            self.audit.log(
-                level="INFO",
-                mailbox_id=mailbox.mailbox_id,
-                mailbox_user=mailbox.imap_user,
-                source_folder=mailbox.imap_source_folder,
-                message_id=candidate.message_id,
-                fingerprint=fingerprint,
-                imap_uid=candidate.uid,
-                sender=None,
-                subject=None,
-                status_before=WorkflowStatus.UNCERTAIN.value,
-                status_after=WorkflowStatus.UNCERTAIN.value,
-                action_taken=ActionTaken.SKIP_ALREADY_DONE,
-                duration_ms=duration_ms,
-                error="Parse failure message already quarantined",
-                dry_run=False,
-            )
-            return ProcessingResult(
-                action_taken=ActionTaken.SKIP_ALREADY_DONE,
-                final_status=WorkflowStatus.SKIPPED,
-                category=None,
-                confidence=None,
-                target_folder=None,
-                draft_path=None,
-                latency_ms=duration_ms,
-                error="Message already processed (parse failure)",
-            )
-        
-        # Log successful quarantine
+        return ProcessingResult(
+            action_taken=ActionTaken.FAILED_PARSE,
+            final_status=WorkflowStatus.FAILED,
+            category=None,
+            confidence=None,
+            target_folder=None,
+            draft_path=None,
+            latency_ms=duration_ms,
+            error=str(exc),
+        )
+
+    def _log_skipped_parse_failure(
+        self,
+        candidate: CandidateMessage,
+        mailbox: MailboxConfig,
+        fingerprint: str,
+        duration_ms: int,
+    ) -> ProcessingResult:
+        self.audit.log(
+            level="INFO",
+            mailbox_id=mailbox.mailbox_id,
+            mailbox_user=mailbox.imap_user,
+            source_folder=mailbox.imap_source_folder,
+            message_id=candidate.message_id,
+            fingerprint=fingerprint,
+            imap_uid=candidate.uid,
+            sender=None,
+            subject=None,
+            status_before=WorkflowStatus.UNCERTAIN.value,
+            status_after=WorkflowStatus.UNCERTAIN.value,
+            action_taken=ActionTaken.SKIP_ALREADY_DONE,
+            duration_ms=duration_ms,
+            error="Parse failure message already quarantined",
+            dry_run=False,
+        )
+        return ProcessingResult(
+            action_taken=ActionTaken.SKIP_ALREADY_DONE,
+            final_status=WorkflowStatus.SKIPPED,
+            category=None,
+            confidence=None,
+            target_folder=None,
+            draft_path=None,
+            latency_ms=duration_ms,
+            error="Message already processed (parse failure)",
+        )
+
+    def _log_quarantine_parse_failure(
+        self,
+        candidate: CandidateMessage,
+        mailbox: MailboxConfig,
+        fingerprint: str,
+        duration_ms: int,
+        exc: Exception,
+    ) -> ProcessingResult:
         self.audit.log(
             level="ERROR",
             mailbox_id=mailbox.mailbox_id,
@@ -316,7 +317,6 @@ class MessageProcessor:
             error=f"parse_failed: {exc}",
             dry_run=False,
         )
-        
         return ProcessingResult(
             action_taken=ActionTaken.MOVE_ROUTE_UNCERTAIN_PARSE_FAILURE,
             final_status=WorkflowStatus.UNCERTAIN,
@@ -327,7 +327,99 @@ class MessageProcessor:
             latency_ms=duration_ms,
             error=str(exc),
         )
+
+    def _handle_parse_failure(
+        self,
+        candidate: CandidateMessage,
+        mailbox: MailboxConfig,
+        imap: IMAPClient,
+        started: float,
+        exc: Exception,
+    ) -> ProcessingResult:
+        """Handle email parsing failure by quarantining to uncertain folder."""
+        fingerprint = hashlib.sha256(candidate.raw_bytes).hexdigest()
+        duration_ms = int((perf_counter() - started) * 1000)
+
+        if self.settings.dry_run:
+            return self._log_dry_run_parse_failure(candidate, mailbox, fingerprint, duration_ms, exc)
+
+        # In production, try to quarantine
+        quarantine_result = self._try_quarantine_parse_failure(
+            candidate, mailbox, imap, fingerprint, exc
+        )
+
+        if quarantine_result is None:
+            # Message already processed (likely already quarantined)
+            # Log and return skip result
+            return self._log_skipped_parse_failure(candidate, mailbox, fingerprint, duration_ms)
+
+        # Log successful quarantine
+        return self._log_quarantine_parse_failure(candidate, mailbox, fingerprint, duration_ms, exc)
     
+    def _update_state_for_parse_quarantine(
+        self,
+        candidate: CandidateMessage,
+        mailbox: MailboxConfig,
+        fingerprint: str,
+        record_id: int,
+        target_uid: str | None,
+        parse_error: Exception,
+        cleanup_exc: Exception | None = None,
+        move_exc: Exception | None = None,
+    ) -> None:
+        """Update DB state based on IMAP quarantine outcome."""
+        if move_exc:
+            self.state.mark_failed(
+                record_id,
+                error_message=f"parse_failed: {parse_error}; quarantine_failed: {move_exc}",
+                error_type=move_exc.__class__.__name__,
+            )
+            return
+
+        if cleanup_exc:
+            self.state.mark_move_cleanup_pending(
+                record_id,
+                category="parse_error",
+                confidence=0.0,
+                target_folder=mailbox.imap_uncertain_folder,
+                target_uid=target_uid,
+                draft_path=None,
+                rule_hit=None,
+                model_name=None,
+                model_latency_ms=None,
+                error_message=f"parse_failed: {parse_error}; cleanup_failed: {cleanup_exc}",
+                error_type=cleanup_exc.__class__.__name__,
+            )
+            self.audit.log(
+                level="ERROR",
+                mailbox_id=mailbox.mailbox_id,
+                mailbox_user=mailbox.imap_user,
+                source_folder=mailbox.imap_source_folder,
+                message_id=candidate.message_id,
+                fingerprint=fingerprint,
+                imap_uid=candidate.uid,
+                status_before="processing",
+                status_after=WorkflowStatus.CLEANUP_PENDING.value,
+                category="parse_error",
+                confidence=0.0,
+                action_taken=MOVE_CLEANUP_PENDING_ACTION,
+                target_folder=mailbox.imap_uncertain_folder,
+                duration_ms=0,
+                error=f"parse_failed: {parse_error}; cleanup_failed: {cleanup_exc}",
+                dry_run=False,
+            )
+            return
+
+        self.state.mark_uncertain(
+            record_id,
+            category="parse_error",
+            confidence=0.0,
+            target_folder=mailbox.imap_uncertain_folder,
+            target_uid=target_uid,
+            action_taken=ActionTaken.MOVE_ROUTE_UNCERTAIN_PARSE_FAILURE,
+            error_message=f"parse_failed: {parse_error}",
+        )
+
     def _try_quarantine_parse_failure(
         self,
         candidate: CandidateMessage,
@@ -374,56 +466,20 @@ class MessageProcessor:
                 imap.delete_message(mailbox.imap_source_folder, candidate.uid)
             except Exception as cleanup_exc:
                 LOGGER.exception("Parse failure quarantine cleanup failed")
-                self.state.mark_move_cleanup_pending(
-                    record.id,
-                    category="parse_error",
-                    confidence=0.0,
-                    target_folder=mailbox.imap_uncertain_folder,
-                    target_uid=target_uid,
-                    draft_path=None,
-                    rule_hit=None,
-                    model_name=None,
-                    model_latency_ms=None,
-                    error_message=f"parse_failed: {parse_error}; cleanup_failed: {cleanup_exc}",
-                    error_type=cleanup_exc.__class__.__name__,
-                )
-                self.audit.log(
-                    level="ERROR",
-                    mailbox_id=mailbox.mailbox_id,
-                    mailbox_user=mailbox.imap_user,
-                    source_folder=mailbox.imap_source_folder,
-                    message_id=candidate.message_id,
-                    fingerprint=fingerprint,
-                    imap_uid=candidate.uid,
-                    status_before="processing",
-                    status_after=WorkflowStatus.CLEANUP_PENDING.value,
-                    category="parse_error",
-                    confidence=0.0,
-                    action_taken=MOVE_CLEANUP_PENDING_ACTION,
-                    target_folder=mailbox.imap_uncertain_folder,
-                    duration_ms=0,
-                    error=f"parse_failed: {parse_error}; cleanup_failed: {cleanup_exc}",
-                    dry_run=False,
+                self._update_state_for_parse_quarantine(
+                    candidate, mailbox, fingerprint, record.id, target_uid, parse_error, cleanup_exc=cleanup_exc
                 )
                 return target_uid
             
-            self.state.mark_uncertain(
-                record.id,
-                category="parse_error",
-                confidence=0.0,
-                target_folder=mailbox.imap_uncertain_folder,
-                target_uid=target_uid,
-                action_taken=ActionTaken.MOVE_ROUTE_UNCERTAIN_PARSE_FAILURE,
-                error_message=f"parse_failed: {parse_error}",
+            self._update_state_for_parse_quarantine(
+                candidate, mailbox, fingerprint, record.id, target_uid, parse_error
             )
             return target_uid
             
         except Exception as move_exc:
             LOGGER.exception("Failed to quarantine parse-failed message")
-            self.state.mark_failed(
-                record.id,
-                error_message=f"parse_failed: {parse_error}; quarantine_failed: {move_exc}",
-                error_type=move_exc.__class__.__name__,
+            self._update_state_for_parse_quarantine(
+                candidate, mailbox, fingerprint, record.id, None, parse_error, move_exc=move_exc
             )
             return None
     
