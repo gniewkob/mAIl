@@ -168,13 +168,18 @@ def _process_mailbox(
             report.cleanup_pass_failed = cleanup_failed
             report.cleanup_uidvalidity_mismatch = cleanup_mismatch
         
+        refresh_interval = settings.processing_lease_seconds / 2.0
+        last_refresh = perf_counter()
+
         # Fetch candidates
         candidates = imap.fetch_candidates(mailbox.imap_source_folder)
         report.candidates_seen = len(candidates)
         
         # Process each candidate
         for candidate in candidates:
-            _refresh_worker_lock(state=processor.state, settings=settings)
+            if perf_counter() - last_refresh > refresh_interval:
+                _refresh_worker_lock(state=processor.state, settings=settings)
+                last_refresh = perf_counter()
             
             result = processor.process_candidate(candidate, mailbox, imap)
             _update_report_from_result(report, result)
