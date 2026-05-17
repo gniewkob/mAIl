@@ -5,6 +5,11 @@ from email.message import EmailMessage
 from mail_ai_agent.config import Settings
 from mail_ai_agent.email_parser import compute_content_fingerprint, compute_message_fingerprint, parse_email
 
+from unittest.mock import patch
+from email.parser import BytesParser
+from email import policy
+from mail_ai_agent.email_parser import _safe_part_content
+
 
 def make_settings() -> Settings:
     return Settings(
@@ -214,3 +219,51 @@ def test_fingerprint_deterministic() -> None:
     r1 = parse_email(raw, make_settings())
     r2 = parse_email(raw, make_settings())
     assert compute_message_fingerprint(r1) == compute_message_fingerprint(r2)
+
+
+def test_safe_part_content_lookup_error_unknown_charset():
+    """Test when get_content raises LookupError due to unknown charset."""
+    raw_msg = b"Content-Type: text/plain; charset=unknown-charset\r\n\r\nHello"
+    msg = BytesParser(policy=policy.default).parsebytes(raw_msg)
+    assert _safe_part_content(msg) == "Hello"
+
+
+def test_safe_part_content_unicode_decode_error():
+    """Test when get_content raises UnicodeDecodeError, fallback to get_payload."""
+    raw_msg = b"Content-Type: text/plain; charset=utf-8\r\n\r\nHello"
+    msg = BytesParser(policy=policy.default).parsebytes(raw_msg)
+    with patch.object(msg, 'get_content', side_effect=UnicodeDecodeError("utf-8", b"", 0, 1, "forced")):
+        assert _safe_part_content(msg) == "Hello"
+
+
+def test_safe_part_content_unknown_charset_payload_fallback():
+    """Test when payload needs to be decoded using unknown charset fallback."""
+    raw_msg = b"Content-Type: text/plain; charset=invalid-charset\r\nContent-Transfer-Encoding: base64\r\n\r\nSGVsbG8=\n"
+    msg = BytesParser(policy=policy.default).parsebytes(raw_msg)
+    with patch.object(msg, 'get_content', side_effect=LookupError("unknown encoding")):
+        assert _safe_part_content(msg) == "Hello"
+
+
+def test_safe_part_content_non_bytes_payload():
+    """Test when get_payload returns string instead of bytes."""
+    raw_msg = b"Content-Type: text/plain; charset=utf-8\r\n\r\nHello"
+    msg = BytesParser(policy=policy.default).parsebytes(raw_msg)
+    with patch.object(msg, 'get_content', side_effect=LookupError("unknown encoding")):
+        with patch.object(msg, 'get_payload', return_value="string payload"):
+            assert _safe_part_content(msg) == "string payload"
+
+
+def test_safe_part_content_returns_bytes_valid_charset():
+    """Test when get_content returns bytes and decodes with valid charset."""
+    raw_msg = b"Content-Type: text/plain; charset=utf-8\r\n\r\nHello"
+    msg = BytesParser(policy=policy.default).parsebytes(raw_msg)
+    with patch.object(msg, 'get_content', return_value=b"Byte content"):
+        assert _safe_part_content(msg) == "Byte content"
+
+
+def test_safe_part_content_returns_bytes_invalid_charset():
+    """Test when get_content returns bytes and decodes with fallback charset."""
+    raw_msg = b"Content-Type: text/plain; charset=invalid-charset\r\n\r\nHello"
+    msg = BytesParser(policy=policy.default).parsebytes(raw_msg)
+    with patch.object(msg, 'get_content', return_value=b"Byte content"):
+        assert _safe_part_content(msg) == "Byte content"
