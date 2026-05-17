@@ -1,0 +1,27 @@
+name: AI Branch Sweep
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '17 6 * * 1-5'
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  sweep:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install jq
+        run: sudo apt-get update && sudo apt-get install -y jq
+
+      - name: Run AI branch sweep (read-only)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash scripts/ai_branch_sweep.sh
