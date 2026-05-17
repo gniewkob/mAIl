@@ -88,6 +88,141 @@ def _write_csv(rows: list[dict[str, Any]], destination: Path) -> None:
             writer.writerow({name: row.get(name) for name in fieldnames})
 
 
+def _create_initial_row(mailbox: MailboxConfig, folder: str, candidate: Any) -> dict[str, Any]:
+    return {
+        "mailbox_id": mailbox.mailbox_id,
+        "mailbox_user": mailbox.imap_user,
+        "source_folder": folder,
+        "uid": candidate.uid,
+        "message_id": candidate.message_id,
+        "sender": None,
+        "subject": None,
+        "decision_source": None,
+        "category": None,
+        "target_folder": None,
+        "final_status": None,
+        "action_taken": None,
+        "confidence": None,
+        "requires_reply": None,
+        "summary": None,
+        "reasoning_short": None,
+        "model_latency_ms": None,
+        "status": "planned",
+        "error": None,
+        "state_records_reset": 0,
+    }
+
+
+def _process_candidate(
+    *,
+    candidate: Any,
+    folder: str,
+    mailbox: MailboxConfig,
+    settings: Settings,
+    llm: LLMGateway,
+    state: StateManager | None,
+    imap: IMAPClient,
+    mode: str,
+    apply: bool,
+    keep_source: bool,
+    force_reprocess: bool,
+    row: dict[str, Any],
+) -> tuple[dict[str, Any], dict[str, int]]:
+    """
+    Process a single candidate message.
+    Returns a tuple of (updated_row, counters) where counters has keys:
+      - failed
+      - planned
+      - applied
+      - state_records_reset
+    """
+    counters = {
+        "failed": 0,
+        "planned": 0,
+        "applied": 0,
+        "state_records_reset": 0,
+    }
+
+    try:
+        parsed = parse_email(candidate.raw_bytes, settings)
+        fingerprint = compute_message_fingerprint(parsed)
+        content_fingerprint = compute_content_fingerprint(parsed)
+    except Exception as exc:
+        row["status"] = "failed"
+        row["action_taken"] = "parse_failed"
+        row["error"] = str(exc)
+        counters["failed"] += 1
+        return row, counters
+
+    row["message_id"] = parsed.message_id
+    row["sender"] = parsed.sender
+    row["subject"] = parsed.subject
+
+    if mode == "stage":
+        row["decision_source"] = "sieve_stage"
+        row["target_folder"] = mailbox.imap_source_folder
+        row["action_taken"] = "stage_for_worker"
+        row["final_status"] = "staged"
+    else:
+        try:
+            rule = evaluate_rules(parsed, mailbox)
+            if rule.action == "needs_llm":
+                classification, latency_ms = llm.classify(parsed)
+                decision = decide_from_llm(classification, settings, mailbox)
+                row["decision_source"] = "llm"
+                row["model_latency_ms"] = latency_ms
+            else:
+                decision = decide_from_rule(rule)
+                row["decision_source"] = "rule"
+        except Exception as exc:
+            row["status"] = "failed"
+            row["action_taken"] = "classification_failed"
+            row["error"] = str(exc)
+            counters["failed"] += 1
+            return row, counters
+
+        row["category"] = decision.category
+        row["target_folder"] = decision.target_folder
+        row["final_status"] = decision.final_status.value
+        row["action_taken"] = decision.action_taken
+        row["confidence"] = decision.confidence
+        row["requires_reply"] = decision.requires_reply
+        row["summary"] = decision.summary
+        row["reasoning_short"] = decision.reasoning_short
+
+    counters["planned"] += 1
+
+    if apply:
+        if row["target_folder"] == folder:
+            row["status"] = "skipped_same_folder"
+        else:
+            try:
+                if force_reprocess and state is not None:
+                    reset_count = state.delete_identity_matches(
+                        mailbox_id=mailbox.mailbox_id,
+                        message_id=parsed.message_id,
+                        fingerprint=fingerprint,
+                        content_fingerprint=content_fingerprint,
+                    )
+                    row["state_records_reset"] = reset_count
+                    counters["state_records_reset"] += reset_count
+                copied_uid = imap.copy_message(folder, candidate.uid, str(row["target_folder"]))
+                row["copied_uid"] = copied_uid
+                if keep_source:
+                    row["status"] = "applied_copy_only"
+                else:
+                    imap.delete_message(folder, candidate.uid)
+                    row["status"] = "applied"
+                counters["applied"] += 1
+            except Exception as exc:
+                row["status"] = "failed"
+                row["action_taken"] = "apply_failed"
+                row["error"] = str(exc)
+                counters["failed"] += 1
+
+    return row, counters
+
+
 def run_historical_backfill(
     *,
     settings: Settings,
@@ -193,113 +328,24 @@ def run_historical_backfill(
                 payload["candidates_seen"] += len(candidates)
 
                 for candidate in candidates:
-                    row: dict[str, Any] = {
-                        "mailbox_id": mailbox.mailbox_id,
-                        "mailbox_user": mailbox.imap_user,
-                        "source_folder": folder,
-                        "uid": candidate.uid,
-                        "message_id": candidate.message_id,
-                        "sender": None,
-                        "subject": None,
-                        "decision_source": None,
-                        "category": None,
-                        "target_folder": None,
-                        "final_status": None,
-                        "action_taken": None,
-                        "confidence": None,
-                        "requires_reply": None,
-                        "summary": None,
-                        "reasoning_short": None,
-                        "model_latency_ms": None,
-                        "status": "planned",
-                        "error": None,
-                        "state_records_reset": 0,
-                    }
-                    try:
-                        parsed = parse_email(candidate.raw_bytes, settings)
-                        fingerprint = compute_message_fingerprint(parsed)
-                        content_fingerprint = compute_content_fingerprint(parsed)
-                    except Exception as exc:
-                        row["status"] = "failed"
-                        row["action_taken"] = "parse_failed"
-                        row["error"] = str(exc)
-                        mailbox_payload["failed"] += 1
-                        payload["failed"] += 1
-                        mailbox_payload["results"].append(row)
-                        export_rows.append(row)
-                        continue
-
-                    row["message_id"] = parsed.message_id
-                    row["sender"] = parsed.sender
-                    row["subject"] = parsed.subject
-
-                    if mode == "stage":
-                        row["decision_source"] = "sieve_stage"
-                        row["target_folder"] = mailbox.imap_source_folder
-                        row["action_taken"] = "stage_for_worker"
-                        row["final_status"] = "staged"
-                    else:
-                        try:
-                            rule = evaluate_rules(parsed, mailbox)
-                            if rule.action == "needs_llm":
-                                classification, latency_ms = llm.classify(parsed)
-                                decision = decide_from_llm(classification, settings, mailbox)
-                                row["decision_source"] = "llm"
-                                row["model_latency_ms"] = latency_ms
-                            else:
-                                decision = decide_from_rule(rule)
-                                row["decision_source"] = "rule"
-                        except Exception as exc:
-                            row["status"] = "failed"
-                            row["action_taken"] = "classification_failed"
-                            row["error"] = str(exc)
-                            mailbox_payload["failed"] += 1
-                            payload["failed"] += 1
-                            mailbox_payload["results"].append(row)
-                            export_rows.append(row)
-                            continue
-
-                        row["category"] = decision.category
-                        row["target_folder"] = decision.target_folder
-                        row["final_status"] = decision.final_status.value
-                        row["action_taken"] = decision.action_taken
-                        row["confidence"] = decision.confidence
-                        row["requires_reply"] = decision.requires_reply
-                        row["summary"] = decision.summary
-                        row["reasoning_short"] = decision.reasoning_short
-                    mailbox_payload["planned"] += 1
-                    payload["planned"] += 1
-
-                    if apply:
-                        if row["target_folder"] == folder:
-                            row["status"] = "skipped_same_folder"
-                        else:
-                            try:
-                                if force_reprocess and state is not None:
-                                    reset_count = state.delete_identity_matches(
-                                        mailbox_id=mailbox.mailbox_id,
-                                        message_id=parsed.message_id,
-                                        fingerprint=fingerprint,
-                                        content_fingerprint=content_fingerprint,
-                                    )
-                                    row["state_records_reset"] = reset_count
-                                    mailbox_payload["state_records_reset"] += reset_count
-                                    payload["state_records_reset"] += reset_count
-                                copied_uid = imap.copy_message(folder, candidate.uid, str(row["target_folder"]))
-                                row["copied_uid"] = copied_uid
-                                if keep_source:
-                                    row["status"] = "applied_copy_only"
-                                else:
-                                    imap.delete_message(folder, candidate.uid)
-                                    row["status"] = "applied"
-                                mailbox_payload["applied"] += 1
-                                payload["applied"] += 1
-                            except Exception as exc:
-                                row["status"] = "failed"
-                                row["action_taken"] = "apply_failed"
-                                row["error"] = str(exc)
-                                mailbox_payload["failed"] += 1
-                                payload["failed"] += 1
+                    row = _create_initial_row(mailbox, folder, candidate)
+                    row, counters = _process_candidate(
+                        candidate=candidate,
+                        folder=folder,
+                        mailbox=mailbox,
+                        settings=settings,
+                        llm=llm,
+                        state=state,
+                        imap=imap,
+                        mode=mode,
+                        apply=apply,
+                        keep_source=keep_source,
+                        force_reprocess=force_reprocess,
+                        row=row,
+                    )
+                    for key, val in counters.items():
+                        mailbox_payload[key] += val
+                        payload[key] += val
 
                     mailbox_payload["results"].append(row)
                     export_rows.append(row)
