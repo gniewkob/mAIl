@@ -23,6 +23,8 @@ if TYPE_CHECKING:
     from .imap_client import IMAPClient
     from .llm_gateway import LLMGateway
     from .state_manager import StateManager
+    from .models import EmailRecord
+    from .schemas import RuleDecision
 
 LOGGER = logging.getLogger(__name__)
 
@@ -328,6 +330,57 @@ class MessageProcessor:
             error=str(exc),
         )
     
+    def _try_quarantine_llm_error(
+        self,
+        candidate: CandidateMessage,
+        mailbox: MailboxConfig,
+        imap: IMAPClient,
+        record: "EmailRecord",
+        action_taken: str,
+        error_prefix: str,
+        exc: Exception,
+    ) -> Exception | None:
+        """Try to quarantine a message after an LLM error.
+
+        Returns the cleanup exception if one occurred, otherwise None.
+        """
+        target_uid = None
+
+        try:
+            target_uid = imap.copy_message(
+                mailbox.imap_source_folder,
+                candidate.uid,
+                mailbox.imap_uncertain_folder,
+            )
+            imap.delete_message(mailbox.imap_source_folder, candidate.uid)
+        except Exception as cleanup_exc:
+            LOGGER.exception(f"{error_prefix} fallback cleanup failed")
+            self.state.mark_move_cleanup_pending(
+                record.id,
+                category="other",
+                confidence=0.0,
+                target_folder=mailbox.imap_uncertain_folder,
+                target_uid=target_uid,
+                draft_path=None,
+                rule_hit=None,
+                model_name=self.settings.ollama_model,
+                model_latency_ms=None,
+                error_message=f"{error_prefix.lower().replace(' ', '_')}: {exc}; cleanup_failed: {cleanup_exc}",
+                error_type=cleanup_exc.__class__.__name__,
+            )
+            return cleanup_exc
+
+        self.state.mark_uncertain(
+            record.id,
+            category="other",
+            confidence=0.0,
+            target_folder=mailbox.imap_uncertain_folder,
+            target_uid=target_uid,
+            action_taken=action_taken,
+            error_message=f"{error_prefix.lower().replace(' ', '_')}: {exc}",
+        )
+        return None
+
     def _try_quarantine_parse_failure(
         self,
         candidate: CandidateMessage,
@@ -778,31 +831,19 @@ class MessageProcessor:
         LOGGER.warning("LLM circuit breaker is open, routing to uncertain: %s", exc)
         
         action_taken = f"{'simulate_' if self.settings.dry_run else 'move_'}route_uncertain_llm_failure"
-        target_uid = None
         
         if not self.settings.dry_run:
-            try:
-                target_uid = imap.copy_message(
-                    mailbox.imap_source_folder,
-                    candidate.uid,
-                    mailbox.imap_uncertain_folder,
-                )
-                imap.delete_message(mailbox.imap_source_folder, candidate.uid)
-            except Exception as cleanup_exc:
-                LOGGER.exception("LLM circuit breaker fallback cleanup failed")
-                self.state.mark_move_cleanup_pending(
-                    record.id,
-                    category="other",
-                    confidence=0.0,
-                    target_folder=mailbox.imap_uncertain_folder,
-                    target_uid=target_uid,
-                    draft_path=None,
-                    rule_hit=None,
-                    model_name=self.settings.ollama_model,
-                    model_latency_ms=None,
-                    error_message=f"llm_circuit_breaker: {exc}; cleanup_failed: {cleanup_exc}",
-                    error_type=cleanup_exc.__class__.__name__,
-                )
+            cleanup_exc = self._try_quarantine_llm_error(
+                candidate=candidate,
+                mailbox=mailbox,
+                imap=imap,
+                record=record,
+                action_taken=action_taken,
+                error_prefix="LLM circuit breaker",
+                exc=exc,
+            )
+
+            if cleanup_exc:
                 return ProcessingResult(
                     action_taken=MOVE_CLEANUP_PENDING_ACTION,
                     final_status=WorkflowStatus.CLEANUP_PENDING,
@@ -813,16 +854,6 @@ class MessageProcessor:
                     latency_ms=int((perf_counter() - started) * 1000),
                     error=str(cleanup_exc),
                 )
-            
-            self.state.mark_uncertain(
-                record.id,
-                category="other",
-                confidence=0.0,
-                target_folder=mailbox.imap_uncertain_folder,
-                target_uid=target_uid,
-                action_taken=action_taken,
-                error_message=f"llm_circuit_breaker: {exc}",
-            )
         
         return ProcessingResult(
             action_taken=action_taken,
@@ -850,31 +881,19 @@ class MessageProcessor:
         LOGGER.warning("LLM failed, routing to uncertain: %s", exc)
         
         action_taken = f"{'simulate_' if self.settings.dry_run else 'move_'}route_uncertain_llm_failure"
-        target_uid = None
         
         if not self.settings.dry_run:
-            try:
-                target_uid = imap.copy_message(
-                    mailbox.imap_source_folder,
-                    candidate.uid,
-                    mailbox.imap_uncertain_folder,
-                )
-                imap.delete_message(mailbox.imap_source_folder, candidate.uid)
-            except Exception as cleanup_exc:
-                LOGGER.exception("LLM failure fallback cleanup failed")
-                self.state.mark_move_cleanup_pending(
-                    record.id,
-                    category="other",
-                    confidence=0.0,
-                    target_folder=mailbox.imap_uncertain_folder,
-                    target_uid=target_uid,
-                    draft_path=None,
-                    rule_hit=None,
-                    model_name=self.settings.ollama_model,
-                    model_latency_ms=None,
-                    error_message=f"llm_unavailable: {exc}; cleanup_failed: {cleanup_exc}",
-                    error_type=cleanup_exc.__class__.__name__,
-                )
+            cleanup_exc = self._try_quarantine_llm_error(
+                candidate=candidate,
+                mailbox=mailbox,
+                imap=imap,
+                record=record,
+                action_taken=action_taken,
+                error_prefix="LLM failure",
+                exc=exc,
+            )
+
+            if cleanup_exc:
                 self.audit.log(
                     level="ERROR",
                     mailbox_id=mailbox.mailbox_id,
@@ -906,15 +925,6 @@ class MessageProcessor:
                     error=str(cleanup_exc),
                 )
             
-            self.state.mark_uncertain(
-                record.id,
-                category="other",
-                confidence=0.0,
-                target_folder=mailbox.imap_uncertain_folder,
-                target_uid=target_uid,
-                action_taken=action_taken,
-                error_message=f"llm_unavailable: {exc}",
-            )
             self.audit.log(
                 level="WARNING",
                 mailbox_id=mailbox.mailbox_id,
