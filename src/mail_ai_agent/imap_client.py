@@ -226,10 +226,7 @@ class IMAPClient(AbstractContextManager["IMAPClient"]):
             target_folders=target_folders,
             dry_run=dry_run,
         )
-        unique_targets = []
-        for folder in target_folders:
-            if folder not in unique_targets:
-                unique_targets.append(folder)
+        unique_targets = list(dict.fromkeys(target_folders))
         for folder in unique_targets:
             self.ensure_folder_access(folder, readonly=False)
 
