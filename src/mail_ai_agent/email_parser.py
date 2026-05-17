@@ -5,7 +5,7 @@ import html
 import re
 from datetime import datetime, timezone
 from email import policy
-from email.message import Message, MIMEPart
+from email.message import MIMEPart
 from email.parser import BytesParser
 from email.utils import parsedate_to_datetime
 
