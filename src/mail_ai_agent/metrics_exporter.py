@@ -15,37 +15,7 @@ from .reporting import summarize_state
 LOGGER = logging.getLogger(__name__)
 
 
-def build_metrics_payload(
-    *,
-    state_db: Path,
-    audit_log: Path,
-    env_file: Path | None = None,
-    stdout_log: Path | None,
-    stderr_log: Path | None,
-    recent_audit_limit: int,
-    recent_audit_max_age_minutes: int,
-    max_uncertain: int,
-) -> str:
-    state_summary = summarize_state(state_db)
-    health = build_health_payload(
-        state_db=state_db,
-        audit_log=audit_log,
-        env_file=env_file,
-        stdout_log=stdout_log,
-        stderr_log=stderr_log,
-        recent_audit_limit=recent_audit_limit,
-        recent_audit_max_age_minutes=recent_audit_max_age_minutes,
-        max_uncertain=max_uncertain,
-    )
-    quality = build_quality_payload(audit_log)
-    learning = build_quality_learning_payload(state_db=state_db, audit_log=audit_log)
-    autotune_source = _latest_autotune_source_dir()
-    deploy_summary = _latest_autotune_deploy_summary()
-    operational_health_status = _operational_health_status(health)
-    state_mailboxes = cast(dict[str, int], state_summary.get("mailboxes", {}))
-    uncertain_by_mailbox = cast(dict[str, int], state_summary.get("uncertain_by_mailbox", {}))
-    failed_by_mailbox = cast(dict[str, int], state_summary.get("failed_by_mailbox", {}))
-
+def _build_health_metrics(health: dict[str, object], operational_health_status: int) -> list[str]:
     lines = [
         "# HELP mailai_health_ok 1 when the mail AI system is healthy.",
         "# TYPE mailai_health_ok gauge",
@@ -63,14 +33,19 @@ def build_metrics_payload(
                 f"mailai_state_{key} {int(cast(int, value))}",
             ]
         )
+    return lines
 
-    summary = quality["summary"]
+
+def _build_quality_metrics(quality: dict[str, object], state_summary: dict[str, object]) -> list[str]:
+    summary = cast(dict[str, float], quality.get("summary", {}))
+    lines: list[str] = []
+
     for key in ["records", "uncertain", "failed", "cleanup_pending", "llm_routed", "rule_routed", "routed_records"]:
         lines.extend(
             [
                 f"# HELP mailai_quality_{key} Current {key} value from audit-derived quality summary.",
                 f"# TYPE mailai_quality_{key} gauge",
-                f"mailai_quality_{key} {float(summary[key])}",
+                f"mailai_quality_{key} {float(summary.get(key, 0.0))}",
             ]
         )
 
@@ -78,10 +53,10 @@ def build_metrics_payload(
         [
             "# HELP mailai_quality_llm_share Share of audit records routed by LLM.",
             "# TYPE mailai_quality_llm_share gauge",
-            f"mailai_quality_llm_share {summary['llm_share']}",
+            f"mailai_quality_llm_share {summary.get('llm_share', 0.0)}",
             "# HELP mailai_quality_rule_share Share of audit records routed by deterministic rules.",
             "# TYPE mailai_quality_rule_share gauge",
-            f"mailai_quality_rule_share {summary['rule_share']}",
+            f"mailai_quality_rule_share {summary.get('rule_share', 0.0)}",
         ]
     )
 
@@ -112,20 +87,28 @@ def build_metrics_payload(
         ]
     )
 
-    parse_error_total = int(quality["by_category"].get("parse_error", 0))
+    by_category = cast(dict[str, int], quality.get("by_category", {}))
+    parse_error_total = int(by_category.get("parse_error", 0))
 
     lines.extend(
         [
             "# HELP mailai_processing_events_total Audit-derived processing event totals by outcome.",
             "# TYPE mailai_processing_events_total counter",
-            f'mailai_processing_events_total{{outcome="llm_routed"}} {float(summary["llm_routed"])}',
-            f'mailai_processing_events_total{{outcome="rule_routed"}} {float(summary["rule_routed"])}',
-            f'mailai_processing_events_total{{outcome="uncertain"}} {float(summary["uncertain"])}',
-            f'mailai_processing_events_total{{outcome="failed"}} {float(summary["failed"])}',
+            f'mailai_processing_events_total{{outcome="llm_routed"}} {float(summary.get("llm_routed", 0.0))}',
+            f'mailai_processing_events_total{{outcome="rule_routed"}} {float(summary.get("rule_routed", 0.0))}',
+            f'mailai_processing_events_total{{outcome="uncertain"}} {float(summary.get("uncertain", 0.0))}',
+            f'mailai_processing_events_total{{outcome="failed"}} {float(summary.get("failed", 0.0))}',
             f'mailai_processing_events_total{{outcome="parse_error"}} {float(parse_error_total)}',
-            f'mailai_processing_events_total{{outcome="cleanup_pending"}} {float(summary["cleanup_pending"])}',
+            f'mailai_processing_events_total{{outcome="cleanup_pending"}} {float(summary.get("cleanup_pending", 0.0))}',
         ]
     )
+
+    state_mailboxes = cast(dict[str, int], state_summary.get("mailboxes", {}))
+    uncertain_by_mailbox = cast(dict[str, int], state_summary.get("uncertain_by_mailbox", {}))
+    failed_by_mailbox = cast(dict[str, int], state_summary.get("failed_by_mailbox", {}))
+    by_mailbox = cast(dict[str, int], quality.get("by_mailbox", {}))
+    by_target_folder = cast(dict[str, int], quality.get("by_target_folder", {}))
+    by_route_source = cast(dict[str, int], quality.get("by_route_source", {}))
 
     lines.extend(_labelled_metrics("mailai_mailbox_records", "Unique messages by mailbox from SQLite state.", state_mailboxes, "mailbox_id"))
     lines.extend(
@@ -144,11 +127,16 @@ def build_metrics_payload(
             "mailbox_id",
         )
     )
-    lines.extend(_labelled_metrics("mailai_mailbox_audit_events", "Audit log events by mailbox in audit-derived quality summary.", quality["by_mailbox"], "mailbox_id"))
-    lines.extend(_labelled_metrics("mailai_category_records", "Records by category in audit-derived quality summary.", quality["by_category"], "category"))
-    lines.extend(_labelled_metrics("mailai_action_records", "Records by action in audit-derived quality summary.", quality["by_action"], "action"))
-    lines.extend(_labelled_metrics("mailai_target_folder_records", "Records by target folder in audit-derived quality summary.", quality["by_target_folder"], "target_folder"))
-    lines.extend(_labelled_metrics("mailai_route_source_records", "Records by route source in audit-derived quality summary.", quality["by_route_source"], "route_source"))
+    lines.extend(_labelled_metrics("mailai_mailbox_audit_events", "Audit log events by mailbox in audit-derived quality summary.", by_mailbox, "mailbox_id"))
+    lines.extend(_labelled_metrics("mailai_category_records", "Records by category in audit-derived quality summary.", by_category, "category"))
+    lines.extend(_labelled_metrics("mailai_action_records", "Records by action in audit-derived quality summary.", action_counts, "action"))
+    lines.extend(_labelled_metrics("mailai_target_folder_records", "Records by target folder in audit-derived quality summary.", by_target_folder, "target_folder"))
+    lines.extend(_labelled_metrics("mailai_route_source_records", "Records by route source in audit-derived quality summary.", by_route_source, "route_source"))
+    return lines
+
+
+def _build_autotune_metrics(learning: dict[str, object], autotune_source: str | None, deploy_summary: dict[str, object] | None) -> list[str]:
+    lines: list[str] = []
     lines.extend(
         _labelled_metrics(
             "mailai_quality_learning_proposals",
@@ -197,6 +185,41 @@ def build_metrics_payload(
             f"mailai_sieve_deploy_rollout_aborted {1 if rollout_aborted else 0}",
         ]
     )
+    return lines
+
+
+def build_metrics_payload(
+    *,
+    state_db: Path,
+    audit_log: Path,
+    env_file: Path | None = None,
+    stdout_log: Path | None,
+    stderr_log: Path | None,
+    recent_audit_limit: int,
+    recent_audit_max_age_minutes: int,
+    max_uncertain: int,
+) -> str:
+    state_summary = summarize_state(state_db)
+    health = build_health_payload(
+        state_db=state_db,
+        audit_log=audit_log,
+        env_file=env_file,
+        stdout_log=stdout_log,
+        stderr_log=stderr_log,
+        recent_audit_limit=recent_audit_limit,
+        recent_audit_max_age_minutes=recent_audit_max_age_minutes,
+        max_uncertain=max_uncertain,
+    )
+    quality = build_quality_payload(audit_log)
+    learning = build_quality_learning_payload(state_db=state_db, audit_log=audit_log)
+    autotune_source = _latest_autotune_source_dir()
+    deploy_summary = _latest_autotune_deploy_summary()
+    operational_health_status = _operational_health_status(health)
+
+    lines: list[str] = []
+    lines.extend(_build_health_metrics(health, operational_health_status))
+    lines.extend(_build_quality_metrics(quality, state_summary))
+    lines.extend(_build_autotune_metrics(learning, autotune_source, deploy_summary))
 
     return "\n".join(lines) + "\n"
 
