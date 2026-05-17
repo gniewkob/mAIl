@@ -216,10 +216,7 @@ class IMAPClient(AbstractContextManager["IMAPClient"]):
 
     def validate_runtime_setup(self, *, source_folder: str, target_folders: list[str], dry_run: bool) -> None:
         self.ensure_folder_access(source_folder, readonly=dry_run)
-        unique_targets = []
-        for folder in target_folders:
-            if folder not in unique_targets:
-                unique_targets.append(folder)
+        unique_targets = list(dict.fromkeys(target_folders))
         self.ensure_folders_exist(unique_targets)
         if not dry_run and not (self.supports_uidplus() or self.mailbox.imap_allow_folder_expunge):
             raise RuntimeError(
@@ -233,10 +230,7 @@ class IMAPClient(AbstractContextManager["IMAPClient"]):
             target_folders=target_folders,
             dry_run=dry_run,
         )
-        unique_targets = []
-        for folder in target_folders:
-            if folder not in unique_targets:
-                unique_targets.append(folder)
+        unique_targets = list(dict.fromkeys(target_folders))
         for folder in unique_targets:
             self.ensure_folder_access(folder, readonly=False)
 
