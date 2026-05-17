@@ -153,6 +153,17 @@ def test_html_only_email_extracts_text() -> None:
     assert "Hello World" in (result.plain_text_body or result.normalized_body or "")
 
 
+def test_invalid_date_header_is_none() -> None:
+    """Email with an invalid Date header should have date=None instead of crashing."""
+    message = EmailMessage()
+    message["From"] = "a@b.com"
+    message["Subject"] = "Test"
+    message["Date"] = "Not a valid date string at all"
+    message.set_content("body")
+    result = parse_email(message.as_bytes(), make_settings())
+    assert result.date is None
+
+
 def test_missing_message_id_is_none() -> None:
     """Email without Message-ID header should have message_id=None."""
     message = EmailMessage()
