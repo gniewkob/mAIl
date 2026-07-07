@@ -3,7 +3,6 @@ import sys
 
 import argparse
 import json
-import os
 import shlex
 from pathlib import Path
 
