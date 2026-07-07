@@ -9,7 +9,6 @@ from pathlib import Path
 from typing import Any
 
 from .schemas import WorkflowStatus
-from .state_manager import MOVE_CLEANUP_PENDING_ACTION
 
 PII_FIELDS = {"sender", "subject", "message_id", "draft_path"}
 

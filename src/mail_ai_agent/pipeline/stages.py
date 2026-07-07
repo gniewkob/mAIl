@@ -13,15 +13,14 @@ from ..decision_engine import decide_from_llm, decide_from_rule
 from ..email_parser import compute_content_fingerprint, compute_message_fingerprint, parse_email
 from ..rule_engine import evaluate_rules
 from ..folder_mapper import category_to_folder
-from .base import Stage, StageError
+from .base import StageError
 from .context import ProcessingContext, ProcessingResult
 
 if TYPE_CHECKING:
     from ..audit_logger import AuditLogger
     from ..config import Settings
     from ..draft_store import DraftStore
-    from ..llm_gateway import LLMGateway
-    from ..repositories.base import LeaseRepositoryProtocol, StateRepositoryProtocol, CleanupRepositoryProtocol
+    from ..repositories.base import LeaseRepositoryProtocol, StateRepositoryProtocol
 
 LOGGER = logging.getLogger(__name__)
 
