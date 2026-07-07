@@ -204,7 +204,6 @@ class AsyncPipelineStage:
     
     async def process(self, context):
         """Async classification (for use in async pipelines)."""
-        from .pipeline.context import ProcessingContext
         from .rule_engine import evaluate_rules
         from .decision_engine import decide_from_rule, decide_from_llm
         from time import perf_counter

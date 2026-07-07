@@ -9,7 +9,17 @@ from pathlib import Path
 from typing import Any
 
 from .schemas import WorkflowStatus
-from .state_manager import MOVE_CLEANUP_PENDING_ACTION
+
+PII_FIELDS = {"sender", "subject", "message_id", "draft_path"}
+
+
+def _mask_pii(record: dict[str, Any]) -> dict[str, Any]:
+    """Replace PII field values with [redacted]."""
+    masked = dict(record)
+    for field in PII_FIELDS:
+        if field in masked and masked[field] not in (None, "", "[redacted]"):
+            masked[field] = "[redacted]"
+    return masked
 
 
 def tail_audit_records(path: Path, n: int) -> list[dict[str, Any]]:
@@ -121,7 +131,7 @@ def export_audit_csv(records: list[dict[str, Any]], destination: Path) -> None:
         writer = csv.DictWriter(handle, fieldnames=fieldnames)
         writer.writeheader()
         for record in records:
-            writer.writerow(record)
+            writer.writerow(_mask_pii(record))
     tmp.replace(destination)
 
 
@@ -142,7 +152,7 @@ def export_state_csv(db_path: Path, destination: Path) -> int:
                     writer.writeheader()
                 if writer is None:
                     raise RuntimeError("CSV writer not initialized")
-                writer.writerow(dict(row))
+                writer.writerow(_mask_pii(dict(row)))
                 row_count += 1
     tmp.replace(destination)
     return row_count

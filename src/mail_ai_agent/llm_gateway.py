@@ -112,7 +112,13 @@ class LLMGateway:
                     return classification, latency_ms
                 except (requests.RequestException, ValueError) as exc:
                     last_error = exc
-                    LOGGER.debug("LLM raw output on failure (attempt %d): %s", attempt, raw_output)
+                    # Do NOT log raw LLM output as it may contain sensitive email content.
+                    # We only log the length for debugging connectivity/response issues.
+                    LOGGER.debug(
+                        "LLM output parsing failed (attempt %d, len=%d)",
+                        attempt,
+                        len(raw_output),
+                    )
                     if attempt < self.settings.max_retries:
                         time.sleep(min(0.5 * attempt, 5.0))
                     continue

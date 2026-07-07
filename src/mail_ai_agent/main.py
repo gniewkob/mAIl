@@ -14,7 +14,6 @@ from .llm_gateway import LLMGateway
 from .message_processor import MessageProcessor, ProcessingResult
 from .constants import ActionTaken, WorkflowStatus
 from .schemas import (
-    CandidateMessage,
     MailboxProcessingReport,
     ProcessingReport,
 )

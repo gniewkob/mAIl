@@ -284,6 +284,68 @@ def test_export_state_csv_writes_atomically(tmp_path: Path) -> None:
     assert "fingerprint" in dest.read_text(encoding="utf-8")
 
 
+def test_export_state_csv_masks_pii(tmp_path: Path) -> None:
+    from mail_ai_agent.reporting import export_state_csv
+    from mail_ai_agent.state_manager import StateManager
+
+    db = tmp_path / "state.sqlite"
+    StateManager(db).acquire_lease(
+        mailbox_id="mb",
+        message_id="REAL_MSG_ID",
+        fingerprint="fp1",
+        imap_uid="1",
+        sender="sensitive@example.com",
+        subject="Confidential Subject",
+        source_folder="INBOX",
+        internaldate=None,
+        worker_id="w",
+        lease_seconds=60,
+        max_retries=3,
+    )
+    dest = tmp_path / "state.csv"
+    export_state_csv(db, dest)
+
+    import csv
+
+    with dest.open("r", encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        rows = list(reader)
+
+    assert rows[0]["sender"] == "[redacted]"
+    assert rows[0]["subject"] == "[redacted]"
+    assert rows[0]["message_id"] == "[redacted]"
+    assert rows[0]["mailbox_id"] == "mb"  # Non-PII field remains intact
+
+
+def test_export_audit_csv_masks_pii(tmp_path: Path) -> None:
+    from mail_ai_agent.reporting import export_audit_csv
+
+    dest = tmp_path / "audit.csv"
+    records = [
+        {
+            "action_taken": "move",
+            "sender": "sensitive@example.com",
+            "subject": "Confidential Subject",
+            "message_id": "REAL_MSG_ID",
+            "draft_path": "/tmp/sensitive_draft.json",
+            "other": "public info",
+        }
+    ]
+    export_audit_csv(records, dest)
+
+    import csv
+
+    with dest.open("r", encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        rows = list(reader)
+
+    assert rows[0]["sender"] == "[redacted]"
+    assert rows[0]["subject"] == "[redacted]"
+    assert rows[0]["message_id"] == "[redacted]"
+    assert rows[0]["draft_path"] == "[redacted]"
+    assert rows[0]["other"] == "public info"
+
+
 def test_summarize_state_closes_sqlite_connection(tmp_path: Path, monkeypatch) -> None:
     import sqlite3
 

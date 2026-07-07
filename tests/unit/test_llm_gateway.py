@@ -184,7 +184,9 @@ def test_classify_logs_raw_output_at_debug_on_parse_failure(monkeypatch, caplog)
                 gateway.classify(parsed)
             except RuntimeError:
                 pass
-    assert any("not valid json at all XYZ" in record.message for record in caplog.records)
+    # We no longer log raw output due to security concerns
+    assert not any("not valid json at all XYZ" in record.message for record in caplog.records)
+    assert any("LLM output parsing failed" in record.message for record in caplog.records)
 
 
 def test_prompt_template_instructs_model_to_start_with_json() -> None:
