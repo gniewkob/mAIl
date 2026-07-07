@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import logging
 from time import perf_counter
 
@@ -8,21 +7,18 @@ from .audit_logger import AuditLogger
 from .cleanup_manager import CleanupManager
 from .config import MailboxConfig, Settings
 from .draft_store import DraftStore
-from .email_parser import compute_content_fingerprint, compute_message_fingerprint, parse_email
+from .email_parser import compute_message_fingerprint, parse_email
 from .folder_mapper import target_folders
 from .imap_client import IMAPAuthError, IMAPClient
 from .llm_gateway import LLMGateway
 from .message_processor import MessageProcessor, ProcessingResult
-from .constants import ActionTaken
+from .constants import ActionTaken, WorkflowStatus
 from .schemas import (
-    LeaseAcquireResult,
+    CandidateMessage,
     MailboxProcessingReport,
-    ParsedEmail,
     ProcessingReport,
-    WorkflowStatus,
 )
 from .state_manager import StateManager
-from .utils import _hash_value
 
 LOGGER = logging.getLogger(__name__)
 
@@ -33,7 +29,6 @@ def process_mailboxes(settings: Settings) -> ProcessingReport:
     This is the main entry point for the worker. It acquires a global worker lock,
     processes each mailbox sequentially, and handles errors gracefully.
     """
-    import sys
     state = StateManager(settings.state_db_path)
     audit = AuditLogger(
         settings.audit_log_path,
