@@ -18,7 +18,9 @@ from .repositories import (
     SqliteStateRepository,
     SqliteWorkerLockRepository,
 )
-from .repositories.fake_repositories import FakeStateManager
+from .repositories.fake_repositories import (
+    FakeStateManager,
+)
 from .state_manager_base import BaseStateManager
 from .utils import _chmod_owner_only
 
