@@ -12,11 +12,10 @@ from .folder_mapper import target_folders
 from .imap_client import IMAPAuthError, IMAPClient
 from .llm_gateway import LLMGateway
 from .message_processor import MessageProcessor, ProcessingResult
-from .constants import ActionTaken
+from .constants import ActionTaken, WorkflowStatus
 from .schemas import (
     MailboxProcessingReport,
     ProcessingReport,
-    WorkflowStatus,
 )
 from .state_manager import StateManager
 
