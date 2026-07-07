@@ -36,40 +36,12 @@ class SqliteBaseRepository:
     
     def _row_to_record(self, row: sqlite3.Row) -> EmailRecord:
         """Convert database row to EmailRecord."""
-        return EmailRecord(
-            id=row["id"],
-            mailbox_id=row["mailbox_id"],
-            message_id=row["message_id"],
-            fingerprint=row["fingerprint"],
-            content_fingerprint=row["content_fingerprint"],
-            imap_uid=row["imap_uid"],
-            uidvalidity=row["uidvalidity"],
-            source_folder=row["source_folder"],
-            target_folder=row["target_folder"],
-            target_uid=row["target_uid"],
-            sender=row["sender"],
-            sender_sha256=row["sender_sha256"],
-            subject=row["subject"],
-            subject_sha256=row["subject_sha256"],
-            internaldate=row["internaldate"],
-            status=WorkflowStatus(row["status"]) if row["status"] else WorkflowStatus.PROCESSING,
-            category=row["category"],
-            confidence=row["confidence"],
-            action_taken=row["action_taken"],
-            draft_path=row["draft_path"],
-            error_message=row["error_message"],
-            processing_started_at=row["processing_started_at"],
-            lock_expires_at=row["lock_expires_at"],
-            lock_owner=row["lock_owner"],
-            attempt_count=row["attempt_count"],
-            last_error_at=row["last_error_at"],
-            last_error_type=row["last_error_type"],
-            rule_hit=row["rule_hit"],
-            model_name=row["model_name"],
-            model_latency_ms=row["model_latency_ms"],
-            created_at=row["created_at"],
-            updated_at=row["updated_at"],
-        )
+        data = dict(row)
+        if "status" in data and data["status"]:
+            data["status"] = WorkflowStatus(data["status"])
+        elif "status" in data:
+            data["status"] = WorkflowStatus.PROCESSING
+        return EmailRecord.model_validate(data)
 
 
 class SqliteLeaseRepository(SqliteBaseRepository, LeaseRepositoryProtocol):
@@ -104,8 +76,13 @@ class SqliteLeaseRepository(SqliteBaseRepository, LeaseRepositoryProtocol):
             
             # Check for existing record by fingerprint
             cursor.execute(
-                """SELECT id, status, message_id, uidvalidity, lock_expires_at, lock_owner, 
-                          attempt_count, last_error_at, last_error_type
+                """SELECT id, mailbox_id, message_id, fingerprint, content_fingerprint,
+                          imap_uid, uidvalidity, source_folder, target_folder, target_uid,
+                          sender, sender_sha256, subject, subject_sha256, internaldate,
+                          status, category, confidence, action_taken, draft_path,
+                          error_message, processing_started_at, lock_expires_at,
+                          lock_owner, attempt_count, last_error_at, last_error_type,
+                          rule_hit, model_name, model_latency_ms, created_at, updated_at
                    FROM email_state 
                    WHERE mailbox_id = ? AND fingerprint = ?""",
                 (mailbox_id, fingerprint),
@@ -529,8 +506,8 @@ class SqliteWorkerLockRepository(SqliteBaseRepository, WorkerLockRepositoryProto
             # Ensure worker_locks table exists
             cursor.execute(
                 """CREATE TABLE IF NOT EXISTS worker_locks (
-                    id INTEGER PRIMARY KEY,
-                    worker_id TEXT UNIQUE NOT NULL,
+                    lock_name TEXT PRIMARY KEY,
+                    worker_id TEXT NOT NULL,
                     lock_expires_at TEXT NOT NULL,
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
@@ -539,13 +516,14 @@ class SqliteWorkerLockRepository(SqliteBaseRepository, WorkerLockRepositoryProto
             
             # Try to acquire lock
             cursor.execute(
-                """INSERT INTO worker_locks (worker_id, lock_expires_at, created_at, updated_at)
-                   VALUES (?, ?, ?, ?)
-                   ON CONFLICT(worker_id) DO UPDATE SET
+                """INSERT INTO worker_locks (lock_name, worker_id, lock_expires_at, created_at, updated_at)
+                   VALUES ('main', ?, ?, ?, ?)
+                   ON CONFLICT(lock_name) DO UPDATE SET
+                       worker_id = excluded.worker_id,
                        lock_expires_at = excluded.lock_expires_at,
                        updated_at = excluded.updated_at
-                   WHERE worker_locks.lock_expires_at < ?""",
-                (worker_id, expires, now_iso, now_iso, now_iso)
+                   WHERE worker_locks.lock_expires_at < ? OR worker_locks.worker_id = ?""",
+                (worker_id, expires, now_iso, now_iso, now_iso, worker_id)
             )
             conn.commit()
             
@@ -554,7 +532,7 @@ class SqliteWorkerLockRepository(SqliteBaseRepository, WorkerLockRepositoryProto
             
             # Check who holds the lock
             cursor.execute(
-                "SELECT worker_id, lock_expires_at FROM worker_locks WHERE id = 1"
+                "SELECT worker_id, lock_expires_at FROM worker_locks WHERE lock_name = 'main'"
             )
             row = cursor.fetchone()
             if row:
