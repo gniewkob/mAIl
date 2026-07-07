@@ -9,10 +9,9 @@ from typing import TYPE_CHECKING
 from .circuit_breaker import CircuitBreakerOpenError
 from .decision_engine import decide_from_llm, decide_from_rule
 from .email_parser import compute_content_fingerprint, compute_message_fingerprint, parse_email
-from .folder_mapper import category_to_folder
 from .rule_engine import evaluate_rules
-from .constants import ActionTaken
-from .schemas import CandidateMessage, FinalDecision, LeaseAcquireResult, ParsedEmail, WorkflowStatus
+from .constants import ActionTaken, WorkflowStatus
+from .schemas import CandidateMessage, FinalDecision, LeaseAcquireResult, ParsedEmail
 from .source_cleanup import SourceCleanupHandler
 from .utils import _hash_value
 
