@@ -19,13 +19,8 @@ from .repositories import (
     SqliteWorkerLockRepository,
 )
 from .repositories.fake_repositories import (
-    FakeCleanupRepository,
-    FakeLeaseRepository,
     FakeStateManager,
-    FakeStateRepository,
-    FakeWorkerLockRepository,
 )
-from .schemas import EmailRecord, LeaseAcquireResult, WorkerLockResult
 from .state_manager_base import BaseStateManager
 from .utils import _chmod_owner_only
 
