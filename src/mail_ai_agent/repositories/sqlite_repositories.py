@@ -5,12 +5,10 @@ from __future__ import annotations
 import sqlite3
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING
 
 from ..constants import WorkflowStatus
 from ..db_pool import ConnectionPool, get_pool
 from ..schemas import EmailRecord, LeaseAcquireResult, WorkerLockResult
-from ..utils import _hash_value
 
 from .base import (
     CleanupRepositoryProtocol,

@@ -6,7 +6,6 @@ from pathlib import Path
 from typing import Any
 
 from .reporting import load_audit_records
-from .state_manager import MOVE_CLEANUP_PENDING_ACTION
 
 
 def _display_value(record: dict[str, Any], field: str) -> str | None:

@@ -9,7 +9,6 @@ from pathlib import Path
 from typing import Any
 
 from .schemas import WorkflowStatus
-from .state_manager import MOVE_CLEANUP_PENDING_ACTION
 
 
 def tail_audit_records(path: Path, n: int) -> list[dict[str, Any]]:
