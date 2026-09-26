@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.mailai.spam.report.daily</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Users/gniewkob/Repos/priv/mAIl/.venv/bin/python</string>
+    <string>-m</string><string>mail_ai_agent.spam_report_cli</string>
+    <string>--env-file</string><string>/Users/gniewkob/Repos/priv/mAIl/.env.multi.prod</string>
+    <string>--apply</string>
+  </array>
+  <key>EnvironmentVariables</key><dict><key>PYTHONPATH</key><string>/Users/gniewkob/Repos/priv/mAIl/src</string></dict>
+  <key>WorkingDirectory</key><string>/Users/gniewkob/Repos/priv/mAIl</string>
+  <key>StartCalendarInterval</key><dict><key>Hour</key><integer>4</integer><key>Minute</key><integer>10</integer></dict>
+  <key>StandardOutPath</key><string>/Users/gniewkob/Repos/priv/mAIl/logs/launchd-spam-report-stdout.log</string>
+  <key>StandardErrorPath</key><string>/Users/gniewkob/Repos/priv/mAIl/logs/launchd-spam-report-stderr.log</string>
+</dict>
+</plist>
