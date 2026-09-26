@@ -452,7 +452,30 @@ def build_metrics_payload(
         ]
     )
 
+    lines.extend(_consistency_metrics(audit_log.parent / "consistency-latest.json"))
     return "\n".join(lines) + "\n"
+
+
+def _consistency_metrics(path: Path) -> list[str]:
+    """Weekly duplicate check written by ops/consistency_check.sh (absent -> no metrics)."""
+    import time
+
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    generated = int(payload.get("generated_at", 0) or 0)
+    return [
+        "# HELP mailai_consistency_redundant_copies Redundant copies of the same message across folders.",
+        "# TYPE mailai_consistency_redundant_copies gauge",
+        f"mailai_consistency_redundant_copies {int(payload.get('redundant_copies', 0))}",
+        "# HELP mailai_consistency_mailbox_errors Mailboxes the consistency check could not read.",
+        "# TYPE mailai_consistency_mailbox_errors gauge",
+        f"mailai_consistency_mailbox_errors {int(payload.get('mailbox_errors', 0))}",
+        "# HELP mailai_consistency_age_seconds Seconds since the last consistency check.",
+        "# TYPE mailai_consistency_age_seconds gauge",
+        f"mailai_consistency_age_seconds {max(0, int(time.time()) - generated) if generated else -1}",
+    ]
 
 
 def _operational_health_status(health: dict[str, object]) -> int:

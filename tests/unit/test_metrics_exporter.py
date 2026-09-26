@@ -1643,3 +1643,16 @@ def test_build_metrics_payload_operational_health_ignores_exploration_uncertain_
     )
 
     assert "operational_health_status 0" in metrics
+
+
+def test_consistency_metrics_from_file(tmp_path) -> None:
+    import json as _json
+    import time as _time
+    from mail_ai_agent.metrics_exporter import _consistency_metrics
+
+    assert _consistency_metrics(tmp_path / "missing.json") == []
+    p = tmp_path / "consistency-latest.json"
+    p.write_text(_json.dumps({"generated_at": int(_time.time()) - 10, "redundant_copies": 3, "mailbox_errors": 0}))
+    out = "\n".join(_consistency_metrics(p))
+    assert "mailai_consistency_redundant_copies 3" in out
+    assert "mailai_consistency_mailbox_errors 0" in out
