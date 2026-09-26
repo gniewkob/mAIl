@@ -101,6 +101,8 @@ def main() -> None:
     ap.add_argument("--env-file", default=".env.multi.prod")
     ap.add_argument("--models", nargs="+", default=["qwen3:8b"])
     ap.add_argument("--smoke", type=int, default=0)
+    ap.add_argument("--rescore", action="store_true",
+                    help="re-score saved per-mail predictions against the current labels (no model calls)")
     args = ap.parse_args()
     base = Settings(_env_file=args.env_file)  # type: ignore[call-arg]
     samples = [json.loads(l) for l in (GOLD / "golden_sample.jsonl").read_text(encoding="utf-8").splitlines() if l]
@@ -113,6 +115,19 @@ def main() -> None:
         raise SystemExit("No labelled rows yet: fill column 'your_label' in data/golden/golden_labels.xlsx")
     box = {m.mailbox_id: m for m in base.load_mailboxes()}
     results = {}
+    predictions: dict[str, dict[str, dict]] = {}
+    if args.rescore:
+        preds = json.loads((GOLD / "bench-predictions.json").read_text())
+        print("| model | pipeline acc | macro-F1 | human mail lost | LLM-only acc | p50 s |")
+        print("|---|---|---|---|---|---|")
+        for m, per in preds.items():
+            ids = [s["id"] for s in samples if s["id"] in per]
+            pipe = score([(labels[i], per[i]["pipeline"]) for i in ids])
+            llm = score([(labels[i], per[i]["llm"]) for i in ids])
+            lat = sorted(per[i]["s"] for i in ids)
+            print(f"| {m} | {pipe['accuracy']:.0%} | {pipe['macro_f1']:.2f} | {pipe['human_mail_lost']} | "
+                  f"{llm['accuracy']:.0%} | {lat[len(lat) // 2]} |")
+        return
     import mail_ai_agent.llm_gateway as gwmod
 
     original_payload = gwmod._build_generate_payload
@@ -142,7 +157,10 @@ def main() -> None:
             lat.append(time.perf_counter() - t0)
             llm_pairs.append((gold, llm_cat))
             rule = evaluate_rules(parsed, box[s["mailbox"]])
-            pipe_pairs.append((gold, llm_cat if rule.action == "needs_llm" else rule.category))
+            pipe_cat = llm_cat if rule.action == "needs_llm" else rule.category
+            pipe_pairs.append((gold, pipe_cat))
+            predictions.setdefault(model, {})[s["id"]] = {"llm": llm_cat, "pipeline": pipe_cat,
+                                                           "s": round(lat[-1], 2)}
         lat.sort()
         results[model] = {
             "llm": score(llm_pairs), "pipeline": score(pipe_pairs), "failures": failures,
@@ -153,6 +171,10 @@ def main() -> None:
     out.write_text(json.dumps({"labels": len(samples), "smoke": bool(args.smoke), "results": results}, indent=2))
     print("\n| model | pipeline acc | macro-F1 | human mail lost | LLM-only acc | failures | p50 s |")
     print("|---|---|---|---|---|---|---|")
+    preds_path = GOLD / "bench-predictions.json"
+    old = json.loads(preds_path.read_text()) if preds_path.exists() else {}
+    old.update(predictions)
+    preds_path.write_text(json.dumps(old, indent=1))
     for m, r in results.items():
         print(f"| {m} | {r['pipeline']['accuracy']:.0%} | {r['pipeline']['macro_f1']:.2f} | "
               f"{r['pipeline']['human_mail_lost']} | {r['llm']['accuracy']:.0%} | {r['failures']} | {r['p50_s']} |")
