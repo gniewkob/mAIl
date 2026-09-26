@@ -44,6 +44,8 @@ def build_health_payload(
     recent_audit_limit: int,
     recent_audit_max_age_minutes: int | None,
     max_uncertain: int,
+    max_uncertain_error: int | None = None,
+    max_uncertain_exploration: int | None = None,
     max_llm_latency_ms: int | None = None,
 ) -> dict[str, object]:
     state = summarize_state(state_db)
@@ -55,6 +57,8 @@ def build_health_payload(
     failed = int(cast(int, statuses.get("failed", 0)))
     cleanup_pending = int(cast(int, state.get("cleanup_pending", 0)))
     uncertain = int(cast(int, statuses.get("uncertain", 0)))
+    uncertain_error = int(cast(int, state.get("uncertain_error", 0)))
+    uncertain_exploration = int(cast(int, state.get("uncertain_exploration", 0)))
 
     if failed > 0:
         issues.append(f"state_failed={failed}")
@@ -62,6 +66,14 @@ def build_health_payload(
         issues.append(f"state_cleanup_pending={cleanup_pending}")
     if uncertain > max_uncertain:
         issues.append(f"state_uncertain={uncertain} exceeds max_uncertain={max_uncertain}")
+    if max_uncertain_error is not None and uncertain_error > max_uncertain_error:
+        issues.append(
+            f"state_uncertain_error={uncertain_error} exceeds max_uncertain_error={max_uncertain_error}"
+        )
+    if max_uncertain_exploration is not None and uncertain_exploration > max_uncertain_exploration:
+        issues.append(
+            f"state_uncertain_exploration={uncertain_exploration} exceeds max_uncertain_exploration={max_uncertain_exploration}"
+        )
     if not config["ok"]:
         issues.append(f"config_error={config['error']}")
 
@@ -95,6 +107,8 @@ def build_health_payload(
             "records": int(cast(int, state.get("records", 0))),
             "processed": int(cast(int, statuses.get("processed", 0))),
             "uncertain": uncertain,
+            "uncertain_error": uncertain_error,
+            "uncertain_exploration": uncertain_exploration,
             "failed": failed,
             "cleanup_pending": cleanup_pending,
         },
@@ -133,8 +147,25 @@ def main() -> None:
         help="Only inspect audit records newer than this many minutes",
     )
     parser.add_argument("--max-uncertain", type=int, default=0, help="Maximum tolerated uncertain rows in state")
+    parser.add_argument(
+        "--max-uncertain-error",
+        type=int,
+        default=None,
+        help="Maximum tolerated non-exploration uncertain rows (defaults to max_uncertain when omitted).",
+    )
+    parser.add_argument(
+        "--max-uncertain-exploration",
+        type=int,
+        default=None,
+        help="Maximum tolerated exploration uncertain rows (defaults to max_uncertain when omitted).",
+    )
     parser.add_argument("--max-llm-latency-ms", type=int, default=None, help="Flag if any recent LLM call exceeded this latency in ms")
     args = parser.parse_args()
+
+    max_uncertain_error = args.max_uncertain if args.max_uncertain_error is None else int(args.max_uncertain_error)
+    max_uncertain_exploration = (
+        args.max_uncertain if args.max_uncertain_exploration is None else int(args.max_uncertain_exploration)
+    )
 
     payload = build_health_payload(
         state_db=Path(args.state_db),
@@ -145,6 +176,8 @@ def main() -> None:
         recent_audit_limit=args.recent_audit_limit,
         recent_audit_max_age_minutes=args.recent_audit_max_age_minutes,
         max_uncertain=args.max_uncertain,
+        max_uncertain_error=max_uncertain_error,
+        max_uncertain_exploration=max_uncertain_exploration,
         max_llm_latency_ms=args.max_llm_latency_ms,
     )
     print(json.dumps(payload, ensure_ascii=False, indent=2))

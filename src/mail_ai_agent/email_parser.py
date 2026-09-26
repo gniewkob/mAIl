@@ -50,6 +50,7 @@ def _matches_compiled(value: str, patterns: tuple[re.Pattern[str], ...]) -> bool
 
 def parse_email(raw_bytes: bytes, settings: Settings) -> ParsedEmail:
     message = BytesParser(policy=policy.default).parsebytes(raw_bytes)
+    headers = _extract_headers(message)
 
     plain_parts: list[str] = []
     html_parts: list[str] = []
@@ -109,6 +110,7 @@ def parse_email(raw_bytes: bytes, settings: Settings) -> ParsedEmail:
         plain_text_body=plain_text_body,
         html_body=html_body,
         normalized_body=normalized_body,
+        headers=headers,
         attachment_metadata=attachments,
     )
 
@@ -203,3 +205,19 @@ def _normalize_date(value: datetime | None) -> str:
     if value is None:
         return ""
     return value.astimezone(timezone.utc).isoformat()
+
+
+def _extract_headers(message) -> dict[str, str]:
+    headers: dict[str, str] = {}
+    for key, value in message.items():
+        if key is None:
+            continue
+        normalized_key = str(key).strip().lower()
+        text_value = str(value or "").strip()
+        if not normalized_key:
+            continue
+        if normalized_key in headers and text_value:
+            headers[normalized_key] = f"{headers[normalized_key]} | {text_value}"
+        else:
+            headers[normalized_key] = text_value
+    return headers

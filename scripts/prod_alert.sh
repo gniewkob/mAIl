@@ -11,6 +11,9 @@ AUDIT_LOG="${AUDIT_LOG:-logs/multi-prod-audit.jsonl}"
 STDOUT_LOG="${STDOUT_LOG:-logs/launchd-multi-prod-stdout.log}"
 STDERR_LOG="${STDERR_LOG:-logs/launchd-multi-prod-stderr.log}"
 ALERT_WEBHOOK_URL="${ALERT_WEBHOOK_URL:-}"
+MAX_UNCERTAIN="${MAX_UNCERTAIN:-3}"
+MAX_UNCERTAIN_ERROR="${MAX_UNCERTAIN_ERROR:-0}"
+MAX_UNCERTAIN_EXPLORATION="${MAX_UNCERTAIN_EXPLORATION:-$MAX_UNCERTAIN}"
 
 args=(
   -m mail_ai_agent.alert_cli
@@ -22,6 +25,9 @@ args=(
   --stderr-log "$STDERR_LOG"
   --recent-audit-limit 50
   --recent-audit-max-age-minutes 15
+  --max-uncertain "$MAX_UNCERTAIN"
+  --max-uncertain-error "$MAX_UNCERTAIN_ERROR"
+  --max-uncertain-exploration "$MAX_UNCERTAIN_EXPLORATION"
 )
 
 if [[ -n "$ALERT_WEBHOOK_URL" ]]; then

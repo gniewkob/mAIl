@@ -13,6 +13,7 @@ from .folder_mapper import category_to_folder
 from .rule_engine import evaluate_rules
 from .constants import ActionTaken
 from .schemas import CandidateMessage, FinalDecision, LeaseAcquireResult, ParsedEmail, WorkflowStatus
+from .sender_priors import load_sender_priors, resolve_sender_prior
 from .source_cleanup import SourceCleanupHandler
 from .utils import _hash_value
 
@@ -370,42 +371,43 @@ class MessageProcessor:
                 candidate.uid,
                 mailbox.imap_uncertain_folder,
             )
-            try:
-                imap.delete_message(mailbox.imap_source_folder, candidate.uid)
-            except Exception as cleanup_exc:
-                LOGGER.exception("Parse failure quarantine cleanup failed")
-                self.state.mark_move_cleanup_pending(
-                    record.id,
-                    category="parse_error",
-                    confidence=0.0,
-                    target_folder=mailbox.imap_uncertain_folder,
-                    target_uid=target_uid,
-                    draft_path=None,
-                    rule_hit=None,
-                    model_name=None,
-                    model_latency_ms=None,
-                    error_message=f"parse_failed: {parse_error}; cleanup_failed: {cleanup_exc}",
-                    error_type=cleanup_exc.__class__.__name__,
-                )
-                self.audit.log(
-                    level="ERROR",
-                    mailbox_id=mailbox.mailbox_id,
-                    mailbox_user=mailbox.imap_user,
-                    source_folder=mailbox.imap_source_folder,
-                    message_id=candidate.message_id,
-                    fingerprint=fingerprint,
-                    imap_uid=candidate.uid,
-                    status_before="processing",
-                    status_after=WorkflowStatus.CLEANUP_PENDING.value,
-                    category="parse_error",
-                    confidence=0.0,
-                    action_taken=MOVE_CLEANUP_PENDING_ACTION,
-                    target_folder=mailbox.imap_uncertain_folder,
-                    duration_ms=0,
-                    error=f"parse_failed: {parse_error}; cleanup_failed: {cleanup_exc}",
-                    dry_run=False,
-                )
-                return target_uid
+            if self.settings.routing_strategy == "move":
+                try:
+                    imap.delete_message(mailbox.imap_source_folder, candidate.uid)
+                except Exception as cleanup_exc:
+                    LOGGER.exception("Parse failure quarantine cleanup failed")
+                    self.state.mark_move_cleanup_pending(
+                        record.id,
+                        category="parse_error",
+                        confidence=0.0,
+                        target_folder=mailbox.imap_uncertain_folder,
+                        target_uid=target_uid,
+                        draft_path=None,
+                        rule_hit=None,
+                        model_name=None,
+                        model_latency_ms=None,
+                        error_message=f"parse_failed: {parse_error}; cleanup_failed: {cleanup_exc}",
+                        error_type=cleanup_exc.__class__.__name__,
+                    )
+                    self.audit.log(
+                        level="ERROR",
+                        mailbox_id=mailbox.mailbox_id,
+                        mailbox_user=mailbox.imap_user,
+                        source_folder=mailbox.imap_source_folder,
+                        message_id=candidate.message_id,
+                        fingerprint=fingerprint,
+                        imap_uid=candidate.uid,
+                        status_before="processing",
+                        status_after=WorkflowStatus.CLEANUP_PENDING.value,
+                        category="parse_error",
+                        confidence=0.0,
+                        action_taken=MOVE_CLEANUP_PENDING_ACTION,
+                        target_folder=mailbox.imap_uncertain_folder,
+                        duration_ms=0,
+                        error=f"parse_failed: {parse_error}; cleanup_failed: {cleanup_exc}",
+                        dry_run=False,
+                    )
+                    return target_uid
             
             self.state.mark_uncertain(
                 record.id,
@@ -470,16 +472,18 @@ class MessageProcessor:
         """Handle lease acquisition failure."""
         duration_ms = int((perf_counter() - started) * 1000)
         
-        # Try cleanup for already-processed messages
-        cleaned = self.cleanup_handler.try_cleanup_already_processed(
-            candidate, mailbox, imap, lease,
-            parsed.message_id, fingerprint, content_fingerprint, sender, subject
-        )
-        if not cleaned:
-            cleaned = self.cleanup_handler.try_cleanup_processed_conflict(
+        cleaned = False
+        # Source cleanup is only valid for destructive move-based routing.
+        if self.settings.routing_strategy == "move":
+            cleaned = self.cleanup_handler.try_cleanup_already_processed(
                 candidate, mailbox, imap, lease,
                 parsed.message_id, fingerprint, content_fingerprint, sender, subject
             )
+            if not cleaned:
+                cleaned = self.cleanup_handler.try_cleanup_processed_conflict(
+                    candidate, mailbox, imap, lease,
+                    parsed.message_id, fingerprint, content_fingerprint, sender, subject
+                )
         
         if cleaned:
             # Cleanup was successful
@@ -552,11 +556,18 @@ class MessageProcessor:
         latency_ms = None
         
         if rule.action == "needs_llm":
-            # Call LLM for classification
-            classification, latency_ms = self.llm.classify(parsed)
-            decision = decide_from_llm(classification, self.settings, mailbox)
+            sender_sha = _hash_value(parsed.sender) or ""
+            prior_decision = self._decision_from_sender_prior(mailbox.mailbox_id, sender_sha, mailbox)
+            if prior_decision is not None:
+                decision = prior_decision
+            else:
+                # Call LLM for classification
+                classification, latency_ms = self.llm.classify(parsed)
+                decision = decide_from_llm(classification, self.settings, mailbox)
         else:
             decision = decide_from_rule(rule)
+
+        decision = self._apply_exploration_budget(decision, fingerprint, mailbox)
         
         # Save draft if needed
         if decision.draft_reply:
@@ -604,31 +615,40 @@ class MessageProcessor:
         started = perf_counter()
         
         try:
+            strategy = self.settings.routing_strategy
+            source_folder = mailbox.imap_source_folder
             # Set flags if needed
             if decision.flags:
-                imap.set_flagged(mailbox.imap_source_folder, candidate.uid)
-            
-            # Copy message
-            target_uid = imap.copy_message(
-                mailbox.imap_source_folder,
-                candidate.uid,
-                decision.target_folder,
-            )
-            
-            # Delete source
-            try:
-                imap.delete_message(mailbox.imap_source_folder, candidate.uid)
-            except Exception as exc:
-                LOGGER.exception("Copy succeeded but source cleanup failed")
-                return self._handle_cleanup_failure(
-                    candidate, mailbox, parsed, fingerprint, record, decision, draft_path, target_uid, exc
-                )
+                imap.set_flagged(source_folder, candidate.uid)
+
+            keyword = self._keyword_for_decision(decision.category)
+            imap.add_keyword(source_folder, candidate.uid, keyword)
+
+            target_uid: str | None = None
+            action_prefix = "move_"
+            if strategy == "copy_plus_tag":
+                action_prefix = "copy_tag_"
+                try:
+                    target_uid = imap.copy_message(source_folder, candidate.uid, decision.target_folder)
+                except Exception as copy_exc:
+                    LOGGER.warning("copy_plus_tag copy failed; falling back to tag_only: %s", copy_exc)
+                    action_prefix = "tag_"
+            elif strategy == "move":
+                target_uid = imap.copy_message(source_folder, candidate.uid, decision.target_folder)
+                try:
+                    imap.delete_message(source_folder, candidate.uid)
+                except Exception as exc:
+                    LOGGER.exception("Copy succeeded but source cleanup failed")
+                    return self._handle_cleanup_failure(
+                        candidate, mailbox, parsed, fingerprint, record, decision, draft_path, target_uid, exc
+                    )
+            else:
+                action_prefix = "tag_"
             
             # Mark as processed/uncertain
             duration_ms = int((perf_counter() - started) * 1000)
             
-            # Determine effective action taken (with move_ prefix for production)
-            effective_action = f"move_{decision.action_taken}"
+            effective_action = f"{action_prefix}{decision.action_taken}"
             
             if decision.final_status == WorkflowStatus.UNCERTAIN:
                 self.state.mark_uncertain(
@@ -701,6 +721,79 @@ class MessageProcessor:
                 latency_ms=duration_ms,
                 error=str(exc),
             )
+
+    def _keyword_for_decision(self, category: str | None) -> str:
+        category_part = (category or "uncategorized").strip().lower()
+        category_part = "".join(ch if ch.isalnum() else "_" for ch in category_part).strip("_")
+        if not category_part:
+            category_part = "uncategorized"
+        prefix = (self.settings.imap_tag_prefix or "$AI_").strip() or "$AI_"
+        return f"{prefix}{category_part}"
+
+    def _decision_from_sender_prior(self, mailbox_id: str, sender_sha256: str, mailbox: MailboxConfig) -> FinalDecision | None:
+        if not self.settings.enable_sender_priors or not sender_sha256:
+            return None
+        payload = load_sender_priors(self.settings.sender_priors_path)
+        candidate = resolve_sender_prior(
+            payload=payload,
+            mailbox_id=mailbox_id,
+            sender_sha256=sender_sha256,
+            min_samples=self.settings.sender_priors_min_samples,
+            min_share=self.settings.sender_priors_min_share,
+        )
+        if candidate is None:
+            return None
+        category = str(candidate["category"])
+        share = float(candidate["share"])
+        return FinalDecision(
+            category=category,
+            priority="medium",
+            confidence=share,
+            target_folder=category_to_folder(category, mailbox),
+            flags=[],
+            final_status=WorkflowStatus.PROCESSED,
+            action_taken=ActionTaken.ROUTE_FROM_PRIOR,
+            requires_reply=False,
+            summary=f"sender prior matched: {category}",
+            reasoning_short=f"sender_prior samples={int(candidate['samples'])} share={share:.4f}",
+            draft_reply=None,
+        )
+
+    def _apply_exploration_budget(self, decision: FinalDecision, fingerprint: str, mailbox: MailboxConfig) -> FinalDecision:
+        if decision.final_status != WorkflowStatus.PROCESSED:
+            return decision
+        if decision.action_taken not in {ActionTaken.ROUTE_FROM_LLM, ActionTaken.ROUTE_FROM_PRIOR}:
+            return decision
+        # Guardrail: do not add exploration load when review backlogs are already high.
+        uncertain_now = self.state.count_by_status(status=WorkflowStatus.UNCERTAIN, mailbox_id=mailbox.mailbox_id)
+        failed_now = self.state.count_by_status(status=WorkflowStatus.FAILED, mailbox_id=mailbox.mailbox_id)
+        if uncertain_now >= int(self.settings.exploration_max_uncertain_per_mailbox):
+            return decision
+        if failed_now >= int(self.settings.exploration_max_failed_per_mailbox):
+            return decision
+        rate = float(self.settings.exploration_rate)
+        if rate <= 0.0:
+            return decision
+        conf = float(decision.confidence or 0.0)
+        if conf < float(self.settings.exploration_min_confidence):
+            return decision
+        seed = f"{mailbox.mailbox_id}:{fingerprint}:explore".encode("utf-8")
+        bucket = int(hashlib.sha256(seed).hexdigest()[:8], 16) / 0xFFFFFFFF
+        if bucket >= rate:
+            return decision
+        return FinalDecision(
+            category=decision.category,
+            priority=decision.priority,
+            confidence=decision.confidence,
+            target_folder=mailbox.imap_uncertain_folder,
+            flags=decision.flags,
+            final_status=WorkflowStatus.UNCERTAIN,
+            action_taken=ActionTaken.ROUTE_UNCERTAIN_EXPLORATION,
+            requires_reply=decision.requires_reply,
+            summary=decision.summary,
+            reasoning_short=f"{decision.reasoning_short or ''}; exploration_budget",
+            draft_reply=None,
+        )
     
     def _handle_cleanup_failure(
         self,
@@ -787,32 +880,35 @@ class MessageProcessor:
                     candidate.uid,
                     mailbox.imap_uncertain_folder,
                 )
-                imap.delete_message(mailbox.imap_source_folder, candidate.uid)
+                if self.settings.routing_strategy == "move":
+                    imap.delete_message(mailbox.imap_source_folder, candidate.uid)
             except Exception as cleanup_exc:
-                LOGGER.exception("LLM circuit breaker fallback cleanup failed")
-                self.state.mark_move_cleanup_pending(
-                    record.id,
-                    category="other",
-                    confidence=0.0,
-                    target_folder=mailbox.imap_uncertain_folder,
-                    target_uid=target_uid,
-                    draft_path=None,
-                    rule_hit=None,
-                    model_name=self.settings.ollama_model,
-                    model_latency_ms=None,
-                    error_message=f"llm_circuit_breaker: {exc}; cleanup_failed: {cleanup_exc}",
-                    error_type=cleanup_exc.__class__.__name__,
-                )
-                return ProcessingResult(
-                    action_taken=MOVE_CLEANUP_PENDING_ACTION,
-                    final_status=WorkflowStatus.CLEANUP_PENDING,
-                    category="other",
-                    confidence=0.0,
-                    target_folder=mailbox.imap_uncertain_folder,
-                    draft_path=None,
-                    latency_ms=int((perf_counter() - started) * 1000),
-                    error=str(cleanup_exc),
-                )
+                if self.settings.routing_strategy == "move":
+                    LOGGER.exception("LLM circuit breaker fallback cleanup failed")
+                    self.state.mark_move_cleanup_pending(
+                        record.id,
+                        category="other",
+                        confidence=0.0,
+                        target_folder=mailbox.imap_uncertain_folder,
+                        target_uid=target_uid,
+                        draft_path=None,
+                        rule_hit=None,
+                        model_name=self.settings.ollama_model,
+                        model_latency_ms=None,
+                        error_message=f"llm_circuit_breaker: {exc}; cleanup_failed: {cleanup_exc}",
+                        error_type=cleanup_exc.__class__.__name__,
+                    )
+                    return ProcessingResult(
+                        action_taken=MOVE_CLEANUP_PENDING_ACTION,
+                        final_status=WorkflowStatus.CLEANUP_PENDING,
+                        category="other",
+                        confidence=0.0,
+                        target_folder=mailbox.imap_uncertain_folder,
+                        draft_path=None,
+                        latency_ms=int((perf_counter() - started) * 1000),
+                        error=str(cleanup_exc),
+                    )
+                raise
             
             self.state.mark_uncertain(
                 record.id,
@@ -859,52 +955,55 @@ class MessageProcessor:
                     candidate.uid,
                     mailbox.imap_uncertain_folder,
                 )
-                imap.delete_message(mailbox.imap_source_folder, candidate.uid)
+                if self.settings.routing_strategy == "move":
+                    imap.delete_message(mailbox.imap_source_folder, candidate.uid)
             except Exception as cleanup_exc:
-                LOGGER.exception("LLM failure fallback cleanup failed")
-                self.state.mark_move_cleanup_pending(
-                    record.id,
-                    category="other",
-                    confidence=0.0,
-                    target_folder=mailbox.imap_uncertain_folder,
-                    target_uid=target_uid,
-                    draft_path=None,
-                    rule_hit=None,
-                    model_name=self.settings.ollama_model,
-                    model_latency_ms=None,
-                    error_message=f"llm_unavailable: {exc}; cleanup_failed: {cleanup_exc}",
-                    error_type=cleanup_exc.__class__.__name__,
-                )
-                self.audit.log(
-                    level="ERROR",
-                    mailbox_id=mailbox.mailbox_id,
-                    mailbox_user=mailbox.imap_user,
-                    source_folder=mailbox.imap_source_folder,
-                    message_id=parsed.message_id,
-                    fingerprint=fingerprint,
-                    imap_uid=candidate.uid,
-                    sender=parsed.sender,
-                    subject=parsed.subject,
-                    status_before="processing",
-                    status_after=WorkflowStatus.CLEANUP_PENDING.value,
-                    category="other",
-                    confidence=0.0,
-                    action_taken=MOVE_CLEANUP_PENDING_ACTION,
-                    target_folder=mailbox.imap_uncertain_folder,
-                    duration_ms=int((perf_counter() - started) * 1000),
-                    error=f"llm_unavailable: {exc}; cleanup_failed: {cleanup_exc}",
-                    dry_run=False,
-                )
-                return ProcessingResult(
-                    action_taken=MOVE_CLEANUP_PENDING_ACTION,
-                    final_status=WorkflowStatus.CLEANUP_PENDING,
-                    category="other",
-                    confidence=0.0,
-                    target_folder=mailbox.imap_uncertain_folder,
-                    draft_path=None,
-                    latency_ms=int((perf_counter() - started) * 1000),
-                    error=str(cleanup_exc),
-                )
+                if self.settings.routing_strategy == "move":
+                    LOGGER.exception("LLM failure fallback cleanup failed")
+                    self.state.mark_move_cleanup_pending(
+                        record.id,
+                        category="other",
+                        confidence=0.0,
+                        target_folder=mailbox.imap_uncertain_folder,
+                        target_uid=target_uid,
+                        draft_path=None,
+                        rule_hit=None,
+                        model_name=self.settings.ollama_model,
+                        model_latency_ms=None,
+                        error_message=f"llm_unavailable: {exc}; cleanup_failed: {cleanup_exc}",
+                        error_type=cleanup_exc.__class__.__name__,
+                    )
+                    self.audit.log(
+                        level="ERROR",
+                        mailbox_id=mailbox.mailbox_id,
+                        mailbox_user=mailbox.imap_user,
+                        source_folder=mailbox.imap_source_folder,
+                        message_id=parsed.message_id,
+                        fingerprint=fingerprint,
+                        imap_uid=candidate.uid,
+                        sender=parsed.sender,
+                        subject=parsed.subject,
+                        status_before="processing",
+                        status_after=WorkflowStatus.CLEANUP_PENDING.value,
+                        category="other",
+                        confidence=0.0,
+                        action_taken=MOVE_CLEANUP_PENDING_ACTION,
+                        target_folder=mailbox.imap_uncertain_folder,
+                        duration_ms=int((perf_counter() - started) * 1000),
+                        error=f"llm_unavailable: {exc}; cleanup_failed: {cleanup_exc}",
+                        dry_run=False,
+                    )
+                    return ProcessingResult(
+                        action_taken=MOVE_CLEANUP_PENDING_ACTION,
+                        final_status=WorkflowStatus.CLEANUP_PENDING,
+                        category="other",
+                        confidence=0.0,
+                        target_folder=mailbox.imap_uncertain_folder,
+                        draft_path=None,
+                        latency_ms=int((perf_counter() - started) * 1000),
+                        error=str(cleanup_exc),
+                    )
+                raise
             
             self.state.mark_uncertain(
                 record.id,

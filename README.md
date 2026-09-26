@@ -199,10 +199,10 @@ Preflight topology before enabling the worker:
 
 Production assumes:
 
-- `INBOX.AI-Review` is worker-owned
+- `INBOX` is the primary source of truth (messages stay visible in the main inbox)
 - target folders already exist
 - `Junk`, `INBOX.Newsletter`, and `INBOX.Offer` are provisioned before enabling production routing
-- IMAP routing uses `copy -> delete_message`
+- IMAP routing uses `copy_plus_tag` (category copies + source preserved)
 - metrics are exposed to Prometheus and Grafana
 - worker scheduling is handled by `launchd`
 
@@ -213,6 +213,9 @@ Useful commands:
 .venv/bin/python -m mail_ai_agent.report_cli --state-db data/state.sqlite --audit-log logs/audit.jsonl
 .venv/bin/python -m mail_ai_agent.preflight_cli --env-file .env.multi.test
 .venv/bin/python -m mail_ai_agent.cleanup_cli --apply
+./scripts/prod_inbox_sync.sh report
+./scripts/prod_inbox_sync.sh repair
+./scripts/prod_inbox_sync.sh prune
 ```
 
 Safe reprocess of current uncertain backlog without deleting originals:
@@ -301,6 +304,7 @@ Active documentation:
 - [docs/multi-mailbox-operations.md](docs/multi-mailbox-operations.md)
 - [docs/recovery-runbook.md](docs/recovery-runbook.md)
 - [docs/quality-review-checklist.md](docs/quality-review-checklist.md)
+- [docs/automatic-learning-implementation.md](docs/automatic-learning-implementation.md)
 
 Historical reference:
 

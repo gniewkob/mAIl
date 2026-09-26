@@ -70,11 +70,14 @@ def test_run_weekly_autotune_writes_mailbox_thresholds(tmp_path: Path) -> None:
         deploy_strict_verify=False,
         deploy_canary_count=1,
         deploy_canary_max_soft_pass_share=0.5,
+        learner_mode="autopromote",
+        shadow_output_dir=tmp_path / "shadow",
     )
     thresholds_path = Path(payload["mailbox_thresholds_path"])
     saved = json.loads(thresholds_path.read_text(encoding="utf-8"))
     assert "mbox_a" in saved["by_mailbox"]
     assert "move_confidence_threshold" in saved["by_mailbox"]["mbox_a"]
+    assert payload["learner"]["effective_mode"] == "autopromote"
 
 
 def test_run_weekly_autotune_canary_abort_on_soft_pass(tmp_path: Path, monkeypatch) -> None:
@@ -139,6 +142,182 @@ def test_run_weekly_autotune_canary_abort_on_soft_pass(tmp_path: Path, monkeypat
         deploy_strict_verify=False,
         deploy_canary_count=2,
         deploy_canary_max_soft_pass_share=0.4,
+        learner_mode="autopromote",
+        shadow_output_dir=tmp_path / "shadow",
     )
     assert payload["deploy"]["rollout_aborted"] is True
     assert len(calls) == 1
+
+
+def test_run_weekly_autotune_shadow_does_not_write_active_files(tmp_path: Path) -> None:
+    mailboxes = {
+        "mailboxes": [
+            {
+                "mailbox_id": "mbox_a",
+                "imap_host": "imap.example.com",
+                "imap_user": "a@example.com",
+                "imap_pass": "secret",
+            }
+        ]
+    }
+    manifest = tmp_path / "mailboxes.json"
+    manifest.write_text(json.dumps(mailboxes), encoding="utf-8")
+    settings = Settings(MAILBOXES_CONFIG_PATH=str(manifest))
+    settings.audit_log_path = tmp_path / "audit.jsonl"
+    settings.audit_log_path.write_text("", encoding="utf-8")
+    settings.state_db_path = tmp_path / "state.sqlite"
+    sieve_dir = tmp_path / "sieve-signals"
+    sieve_dir.mkdir()
+    (sieve_dir / "mbox_a.main.sieve").write_text('require ["fileinto"];\n', encoding="utf-8")
+    auto_policy_path = tmp_path / "sieve_policy.auto.json"
+    thresholds_path = tmp_path / "mailbox_thresholds.auto.json"
+
+    payload = run_weekly_autotune(
+        settings=settings,
+        sieve_signals_dir=sieve_dir,
+        auto_policy_path=auto_policy_path,
+        mailbox_thresholds_path=thresholds_path,
+        generated_sieve_dir=tmp_path / "generated",
+        learning_output_dir=tmp_path / "learning",
+        window_days=14,
+        min_count=2,
+        max_keywords_per_bucket=20,
+        deploy=False,
+        deploy_port=4190,
+        deploy_timeout_seconds=20,
+        deploy_tls_mode="auto",
+        deploy_strict_verify=False,
+        deploy_canary_count=1,
+        deploy_canary_max_soft_pass_share=0.5,
+        learner_mode="shadow",
+        shadow_output_dir=tmp_path / "shadow",
+    )
+    assert not auto_policy_path.exists()
+    assert not thresholds_path.exists()
+    assert payload["learner"]["effective_mode"] == "shadow"
+
+
+def test_run_weekly_autotune_autopromote_falls_back_to_propose_on_blockers(tmp_path: Path, monkeypatch) -> None:
+    from mail_ai_agent import weekly_autotune_cli
+
+    mailboxes = {
+        "mailboxes": [
+            {
+                "mailbox_id": "mbox_a",
+                "imap_host": "imap.example.com",
+                "imap_user": "a@example.com",
+                "imap_pass": "secret",
+            }
+        ]
+    }
+    manifest = tmp_path / "mailboxes.json"
+    manifest.write_text(json.dumps(mailboxes), encoding="utf-8")
+    settings = Settings(MAILBOXES_CONFIG_PATH=str(manifest))
+    settings.audit_log_path = tmp_path / "audit.jsonl"
+    settings.audit_log_path.write_text("", encoding="utf-8")
+    settings.state_db_path = tmp_path / "state.sqlite"
+    sieve_dir = tmp_path / "sieve-signals"
+    sieve_dir.mkdir()
+    (sieve_dir / "mbox_a.main.sieve").write_text('require ["fileinto"];\n', encoding="utf-8")
+    auto_policy_path = tmp_path / "sieve_policy.auto.json"
+    thresholds_path = tmp_path / "mailbox_thresholds.auto.json"
+
+    monkeypatch.setattr(
+        weekly_autotune_cli,
+        "build_quality_learning_payload",
+        lambda **_: {
+            "state": {"failed": 1, "cleanup_pending": 0},
+            "proposals": [{"kind": "ops", "priority": "high"}],
+            "current_uncertain_by_mailbox": {},
+            "current_failed_by_mailbox": {},
+            "audit_summary": {},
+            "recommendations": [],
+        },
+    )
+
+    payload = run_weekly_autotune(
+        settings=settings,
+        sieve_signals_dir=sieve_dir,
+        auto_policy_path=auto_policy_path,
+        mailbox_thresholds_path=thresholds_path,
+        generated_sieve_dir=tmp_path / "generated",
+        learning_output_dir=tmp_path / "learning",
+        window_days=14,
+        min_count=2,
+        max_keywords_per_bucket=20,
+        deploy=False,
+        deploy_port=4190,
+        deploy_timeout_seconds=20,
+        deploy_tls_mode="auto",
+        deploy_strict_verify=False,
+        deploy_canary_count=1,
+        deploy_canary_max_soft_pass_share=0.5,
+        learner_mode="autopromote",
+        shadow_output_dir=tmp_path / "shadow",
+    )
+    assert payload["learner"]["effective_mode"] == "propose"
+    assert not auto_policy_path.exists()
+    assert not thresholds_path.exists()
+
+
+def test_run_weekly_autotune_autopromote_falls_back_to_propose_when_challenger_impact_too_low(tmp_path: Path, monkeypatch) -> None:
+    from mail_ai_agent import weekly_autotune_cli
+
+    mailboxes = {
+        "mailboxes": [
+            {
+                "mailbox_id": "mbox_a",
+                "imap_host": "imap.example.com",
+                "imap_user": "a@example.com",
+                "imap_pass": "secret",
+            }
+        ]
+    }
+    manifest = tmp_path / "mailboxes.json"
+    manifest.write_text(json.dumps(mailboxes), encoding="utf-8")
+    settings = Settings(MAILBOXES_CONFIG_PATH=str(manifest))
+    settings.audit_log_path = tmp_path / "audit.jsonl"
+    settings.audit_log_path.write_text("", encoding="utf-8")
+    settings.state_db_path = tmp_path / "state.sqlite"
+    sieve_dir = tmp_path / "sieve-signals"
+    sieve_dir.mkdir()
+    (sieve_dir / "mbox_a.main.sieve").write_text('require ["fileinto"];\n', encoding="utf-8")
+    auto_policy_path = tmp_path / "sieve_policy.auto.json"
+    thresholds_path = tmp_path / "mailbox_thresholds.auto.json"
+
+    monkeypatch.setattr(
+        weekly_autotune_cli,
+        "build_quality_learning_payload",
+        lambda **_: {
+            "state": {"failed": 0, "cleanup_pending": 0},
+            "proposals": [{"kind": "prompt", "priority": "medium", "impact_score": "0.0100"}],
+            "current_uncertain_by_mailbox": {},
+            "current_failed_by_mailbox": {},
+            "audit_summary": {},
+            "recommendations": [],
+        },
+    )
+
+    payload = run_weekly_autotune(
+        settings=settings,
+        sieve_signals_dir=sieve_dir,
+        auto_policy_path=auto_policy_path,
+        mailbox_thresholds_path=thresholds_path,
+        generated_sieve_dir=tmp_path / "generated",
+        learning_output_dir=tmp_path / "learning",
+        window_days=14,
+        min_count=2,
+        max_keywords_per_bucket=20,
+        deploy=False,
+        deploy_port=4190,
+        deploy_timeout_seconds=20,
+        deploy_tls_mode="auto",
+        deploy_strict_verify=False,
+        deploy_canary_count=1,
+        deploy_canary_max_soft_pass_share=0.5,
+        learner_mode="autopromote",
+        shadow_output_dir=tmp_path / "shadow",
+        challenger_min_impact_score=0.5,
+    )
+    assert payload["learner"]["effective_mode"] == "propose"
+    assert payload["learner"]["champion_challenger"]["promote"] is False

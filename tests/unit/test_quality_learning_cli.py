@@ -179,3 +179,91 @@ def test_render_quality_learning_markdown_contains_recommendations() -> None:
     assert "mbox_a" in rendered
     assert "Review the top uncertain mailbox first." in rendered
     assert "## Proposed changes" in rendered
+
+
+def test_build_quality_learning_payload_includes_feedback_summary_and_impact_scores(tmp_path: Path) -> None:
+    state_db = tmp_path / "state.sqlite"
+    audit_log = tmp_path / "audit.jsonl"
+    feedback_log = tmp_path / "quality-feedback.jsonl"
+    manager = StateManager(state_db)
+
+    lease = manager.acquire_lease(
+        mailbox_id="mbox_a",
+        message_id="<one@mailplus.pl>",
+        fingerprint="fp1",
+        imap_uid="1",
+        sender="a@example.com",
+        subject="Hello",
+        source_folder="INBOX.AI-Review",
+        internaldate=None,
+        worker_id="w1",
+        lease_seconds=60,
+        max_retries=3,
+    )
+    assert lease.record is not None
+    manager.mark_uncertain(lease.record.id, category="other", confidence=0.4, error_message="manual review")
+
+    audit_log.write_text(
+        "\n".join(
+            [
+                json.dumps(
+                    {
+                        "timestamp": "2026-04-08T12:00:00+00:00",
+                        "mailbox_id": "mbox_a",
+                        "category": "other",
+                        "action_taken": "move_route_uncertain",
+                        "status_after": "uncertain",
+                        "target_folder": "INBOX.AI-Uncertain",
+                    }
+                ),
+                json.dumps(
+                    {
+                        "timestamp": "2026-04-08T12:00:01+00:00",
+                        "mailbox_id": "mbox_a",
+                        "category": "parse_error",
+                        "action_taken": "move_route_uncertain_parse_failure",
+                        "status_after": "uncertain",
+                        "target_folder": "INBOX.AI-Uncertain",
+                    }
+                ),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    feedback_log.write_text(
+        "\n".join(
+            [
+                json.dumps(
+                    {
+                        "timestamp": "2026-04-08T12:00:03+00:00",
+                        "mailbox_id": "mbox_a",
+                        "message_id": "<m1@example.com>",
+                        "predicted_category": "other",
+                        "corrected_category": "offer",
+                        "was_wrong": True,
+                        "reason": "manual correction",
+                    }
+                ),
+                json.dumps(
+                    {
+                        "timestamp": "2026-04-08T12:00:04+00:00",
+                        "mailbox_id": "mbox_a",
+                        "message_id": "<m2@example.com>",
+                        "predicted_category": "other",
+                        "corrected_category": "parse_error",
+                        "was_wrong": True,
+                        "reason": "parse issue",
+                    }
+                ),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    payload = build_quality_learning_payload(state_db=state_db, audit_log=audit_log, feedback_log=feedback_log)
+    assert payload["feedback_summary"]["records"] == 2
+    assert payload["feedback_summary"]["wrong_total"] == 2
+    assert all("impact_score" in proposal for proposal in payload["proposals"])
+    assert payload["parse_error_clusters"][0]["count"] >= 1

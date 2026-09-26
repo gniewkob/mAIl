@@ -273,3 +273,93 @@ def test_build_health_payload_flags_runtime_config_error(monkeypatch, tmp_path: 
     assert payload["config"]["ok"] is False
     assert "keychain secret" in str(payload["config"]["error"])
     assert any(str(issue).startswith("config_error=") for issue in payload["issues"])
+
+
+def test_build_health_payload_allows_exploration_uncertain_with_split_thresholds(tmp_path: Path) -> None:
+    state_path = tmp_path / "state.sqlite"
+    audit_path = tmp_path / "audit.jsonl"
+    audit_path.write_text("", encoding="utf-8")
+    manager = StateManager(state_path)
+
+    lease = manager.acquire_lease(
+        mailbox_id="inbox_a",
+        message_id="msg-1",
+        fingerprint="fp-1",
+        imap_uid="10",
+        sender="client@example.com",
+        subject="Temat",
+        source_folder="INBOX.AI-Review",
+        internaldate=None,
+        worker_id="worker-1",
+        lease_seconds=60,
+        max_retries=3,
+    )
+    assert lease.record is not None
+    manager.mark_uncertain(
+        lease.record.id,
+        category="other",
+        confidence=0.2,
+        action_taken="move_route_uncertain_exploration",
+        error_message="exploration",
+    )
+
+    payload = build_health_payload(
+        state_db=state_path,
+        audit_log=audit_path,
+        stdout_log=None,
+        stderr_log=None,
+        recent_audit_limit=10,
+        recent_audit_max_age_minutes=60,
+        max_uncertain=3,
+        max_uncertain_error=0,
+        max_uncertain_exploration=3,
+    )
+
+    assert payload["ok"] is True
+    assert payload["state"]["uncertain"] == 1
+    assert payload["state"]["uncertain_error"] == 0
+    assert payload["state"]["uncertain_exploration"] == 1
+
+
+def test_build_health_payload_flags_uncertain_error_with_split_thresholds(tmp_path: Path) -> None:
+    state_path = tmp_path / "state.sqlite"
+    audit_path = tmp_path / "audit.jsonl"
+    audit_path.write_text("", encoding="utf-8")
+    manager = StateManager(state_path)
+
+    lease = manager.acquire_lease(
+        mailbox_id="inbox_a",
+        message_id="msg-1",
+        fingerprint="fp-1",
+        imap_uid="10",
+        sender="client@example.com",
+        subject="Temat",
+        source_folder="INBOX.AI-Review",
+        internaldate=None,
+        worker_id="worker-1",
+        lease_seconds=60,
+        max_retries=3,
+    )
+    assert lease.record is not None
+    manager.mark_uncertain(
+        lease.record.id,
+        category="other",
+        confidence=0.2,
+        action_taken="move_route_uncertain_llm_failure",
+        error_message="llm failed",
+    )
+
+    payload = build_health_payload(
+        state_db=state_path,
+        audit_log=audit_path,
+        stdout_log=None,
+        stderr_log=None,
+        recent_audit_limit=10,
+        recent_audit_max_age_minutes=60,
+        max_uncertain=3,
+        max_uncertain_error=0,
+        max_uncertain_exploration=3,
+    )
+
+    assert payload["ok"] is False
+    assert any("state_uncertain_error=1 exceeds max_uncertain_error=0" in str(issue) for issue in payload["issues"])

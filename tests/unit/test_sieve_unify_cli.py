@@ -26,11 +26,19 @@ def test_render_contains_mailbox_folders() -> None:
     mailbox = _mailbox()
     script = _render(mailbox, DEFAULT_POLICY)
 
-    assert 'fileinto "Junk";' in script
-    assert 'fileinto "INBOX.Billing";' in script
-    assert 'fileinto "INBOX.System";' in script
-    assert 'fileinto "INBOX.Newsletter";' in script
+    assert 'fileinto :copy "Junk";' in script
+    assert 'fileinto :copy "INBOX.Billing";' in script
+    assert 'fileinto :copy "INBOX.System";' in script
+    assert 'fileinto :copy "INBOX.Newsletter";' in script
     assert 'fileinto "INBOX.AI-Review";' in script
+
+
+def test_render_uses_keep_when_source_folder_is_inbox() -> None:
+    mailbox = _mailbox(imap_source_folder="INBOX")
+    script = _render(mailbox, DEFAULT_POLICY)
+
+    assert "keep;" in script
+    assert 'fileinto "INBOX";' not in script
 
 
 def test_render_logic_is_uniform_across_mailboxes_except_folder_values() -> None:

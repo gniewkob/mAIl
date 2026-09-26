@@ -95,6 +95,15 @@ def evaluate_rules(parsed_email: ParsedEmail, mailbox: MailboxConfig) -> RuleDec
     body = parsed_email.normalized_body.lower()
     message_id = (parsed_email.message_id or "").lower()
     combined = " ".join([subject, sender, body, message_id])
+    spamsieve_spam = _is_spamsieve_spam(parsed_email)
+
+    if spamsieve_spam:
+        return RuleDecision(
+            category="spam",
+            target_folder=category_to_folder("spam", mailbox),
+            action="skip_ai",
+            reason="SpamSieve header matched spam",
+        )
 
     if any(keyword in subject for keyword in BILLING_KEYWORDS):
         return RuleDecision(
@@ -176,3 +185,18 @@ def evaluate_rules(parsed_email: ParsedEmail, mailbox: MailboxConfig) -> RuleDec
         action="needs_llm",
         reason="no deterministic rule matched",
     )
+
+
+def _is_spamsieve_spam(parsed_email: ParsedEmail) -> bool:
+    headers = {str(k).lower(): str(v).lower() for k, v in (parsed_email.headers or {}).items()}
+    x_spamsieve = headers.get("x-spamsieve", "")
+    if x_spamsieve:
+        if "spam" in x_spamsieve and "not spam" not in x_spamsieve and "good" not in x_spamsieve:
+            return True
+    x_spam_status = headers.get("x-spam-status", "")
+    if x_spam_status.startswith("yes") or "yes," in x_spam_status:
+        return True
+    x_spam_flag = headers.get("x-spam-flag", "")
+    if x_spam_flag in {"yes", "true"}:
+        return True
+    return False

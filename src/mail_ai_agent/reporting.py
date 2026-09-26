@@ -12,6 +12,11 @@ from .schemas import WorkflowStatus
 from .state_manager import MOVE_CLEANUP_PENDING_ACTION
 
 
+def is_exploration_uncertain_action(action_taken: str | None) -> bool:
+    raw = str(action_taken or "").strip().lower()
+    return "route_uncertain_exploration" in raw
+
+
 def tail_audit_records(path: Path, n: int) -> list[dict[str, Any]]:
     """Read the last n JSONL records from an audit log without loading the full file."""
     if not path.exists():
@@ -90,7 +95,6 @@ def summarize_audit_records(records: list[dict[str, Any]]) -> dict[str, Any]:
         "move_copy_succeeded_cleanup_pending",
         "move_route_uncertain_llm_failure",
         "move_route_uncertain_parse_failure",
-        "cleanup_source_already_done_failed",
     }
     expected_skips = sum(int(action_counts.get(action, 0)) for action in expected_skip_actions)
     processing_failures = sum(int(action_counts.get(action, 0)) for action in processing_failure_actions)
@@ -156,10 +160,18 @@ def summarize_state(db_path: Path) -> dict[str, Any]:
             "mailboxes": {},
             "cleanup_pending": 0,
             "uncertain_by_mailbox": {},
+            "uncertain_exploration_by_mailbox": {},
+            "uncertain_error_by_mailbox": {},
+            "uncertain_exploration": 0,
+            "uncertain_error": 0,
             "failed_by_mailbox": {},
         }
     with closing(sqlite3.connect(db_path)) as conn, conn:
         conn.row_factory = sqlite3.Row
+        columns = {
+            str(row[1])
+            for row in conn.execute("PRAGMA table_info(email_processing_state)").fetchall()
+        }
         rows = conn.execute(
             """
             SELECT status, COUNT(*) AS count
@@ -186,6 +198,29 @@ def summarize_state(db_path: Path) -> dict[str, Any]:
             """,
             (WorkflowStatus.UNCERTAIN.value,),
         ).fetchall()
+        uncertain_action_rows: list[sqlite3.Row]
+        if "action_taken" in columns:
+            uncertain_action_rows = conn.execute(
+                """
+                SELECT mailbox_id, COALESCE(action_taken, '') AS action_taken, COUNT(*) AS count
+                FROM email_processing_state
+                WHERE status = ?
+                GROUP BY mailbox_id, action_taken
+                ORDER BY mailbox_id, action_taken
+                """,
+                (WorkflowStatus.UNCERTAIN.value,),
+            ).fetchall()
+        else:
+            uncertain_action_rows = conn.execute(
+                """
+                SELECT mailbox_id, '' AS action_taken, COUNT(*) AS count
+                FROM email_processing_state
+                WHERE status = ?
+                GROUP BY mailbox_id
+                ORDER BY mailbox_id
+                """,
+                (WorkflowStatus.UNCERTAIN.value,),
+            ).fetchall()
         failed_mailbox_rows = conn.execute(
             """
             SELECT mailbox_id, COUNT(*) AS count
@@ -201,11 +236,30 @@ def summarize_state(db_path: Path) -> dict[str, Any]:
             "SELECT COUNT(*) FROM email_processing_state WHERE status = ?",
             (WorkflowStatus.CLEANUP_PENDING.value,),
         ).fetchone()[0]
+    uncertain_exploration_by_mailbox: dict[str, int] = {}
+    uncertain_error_by_mailbox: dict[str, int] = {}
+    uncertain_exploration = 0
+    uncertain_error = 0
+    for row in uncertain_action_rows:
+        mailbox_id = str(row["mailbox_id"])
+        count = int(row["count"])
+        if count <= 0:
+            continue
+        if is_exploration_uncertain_action(str(row["action_taken"])):
+            uncertain_exploration_by_mailbox[mailbox_id] = uncertain_exploration_by_mailbox.get(mailbox_id, 0) + count
+            uncertain_exploration += count
+        else:
+            uncertain_error_by_mailbox[mailbox_id] = uncertain_error_by_mailbox.get(mailbox_id, 0) + count
+            uncertain_error += count
     return {
         "records": total,
         "statuses": {row["status"]: row["count"] for row in rows},
         "mailboxes": {row["mailbox_id"]: row["count"] for row in mailbox_rows},
         "cleanup_pending": cleanup_pending,
         "uncertain_by_mailbox": {row["mailbox_id"]: row["count"] for row in uncertain_mailbox_rows},
+        "uncertain_exploration_by_mailbox": uncertain_exploration_by_mailbox,
+        "uncertain_error_by_mailbox": uncertain_error_by_mailbox,
+        "uncertain_exploration": uncertain_exploration,
+        "uncertain_error": uncertain_error,
         "failed_by_mailbox": {row["mailbox_id"]: row["count"] for row in failed_mailbox_rows},
     }

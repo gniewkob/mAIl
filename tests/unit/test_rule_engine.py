@@ -223,3 +223,16 @@ def test_rule_engine_does_not_confuse_reklamacja_with_marketing() -> None:
 
     assert decision.action == "skip_ai"
     assert decision.category == "complaint"
+
+
+def test_rule_engine_respects_spamsieve_spam_header_without_llm() -> None:
+    parsed = ParsedEmail(
+        sender="client@example.com",
+        subject="Normalny temat",
+        normalized_body="normalna tresc",
+        headers={"x-spamsieve": "Spam"},
+    )
+
+    decision = evaluate_rules(parsed, make_mailbox())
+    assert decision.action == "skip_ai"
+    assert decision.category == "spam"

@@ -94,6 +94,145 @@ def _rule_engine_patch_diff(candidate_domains: list[str]) -> str:
     )
 
 
+def _load_feedback_summary(feedback_log: Path, *, max_records: int = 5000) -> dict[str, Any]:
+    if not feedback_log.exists():
+        return {
+            "records": 0,
+            "wrong_total": 0,
+            "wrong_rate": 0.0,
+            "outcome_bad_total": 0,
+            "outcome_bad_rate": 0.0,
+            "wrong_by_kind": {"rule_engine": 0, "prompt": 0, "parser": 0},
+            "wrong_rate_by_kind": {"rule_engine": 0.0, "prompt": 0.0, "parser": 0.0},
+        }
+
+    records = 0
+    wrong_total = 0
+    outcome_bad_total = 0
+    outcome_labeled_total = 0
+    wrong_by_kind: Counter[str] = Counter()
+    kind_total: Counter[str] = Counter()
+    lines = feedback_log.read_text(encoding="utf-8").splitlines()[-max_records:]
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            item = json.loads(line)
+        except Exception:
+            continue
+        if not isinstance(item, dict):
+            continue
+        records += 1
+        predicted = str(item.get("predicted_category") or "").strip().lower()
+        corrected = str(item.get("corrected_category") or "").strip().lower()
+        reason = str(item.get("reason") or "").strip().lower()
+        was_wrong = bool(item.get("was_wrong", predicted != corrected))
+        if "outcome_ok" in item:
+            outcome_labeled_total += 1
+            if not bool(item.get("outcome_ok")):
+                outcome_bad_total += 1
+
+        if "parse" in reason or corrected == "parse_error":
+            kind = "parser"
+        elif corrected in {"billing", "system", "newsletter", "offer", "spam", "other"}:
+            kind = "rule_engine"
+        else:
+            kind = "prompt"
+        kind_total[kind] += 1
+        if was_wrong:
+            wrong_total += 1
+            wrong_by_kind[kind] += 1
+
+    wrong_rate = (wrong_total / records) if records else 0.0
+    outcome_bad_rate = (outcome_bad_total / outcome_labeled_total) if outcome_labeled_total else 0.0
+    wrong_rate_by_kind = {
+        kind: (wrong_by_kind.get(kind, 0) / kind_total.get(kind, 1)) if kind_total.get(kind, 0) else 0.0
+        for kind in ("rule_engine", "prompt", "parser")
+    }
+    return {
+        "records": records,
+        "wrong_total": wrong_total,
+        "wrong_rate": round(wrong_rate, 4),
+        "outcome_bad_total": outcome_bad_total,
+        "outcome_bad_rate": round(outcome_bad_rate, 4),
+        "wrong_by_kind": {kind: int(wrong_by_kind.get(kind, 0)) for kind in ("rule_engine", "prompt", "parser")},
+        "wrong_rate_by_kind": {kind: round(rate, 4) for kind, rate in wrong_rate_by_kind.items()},
+    }
+
+
+def _extract_error_cluster_key(error: str) -> str:
+    raw = (error or "").strip().lower()
+    if not raw:
+        return "unknown"
+    if ":" in raw:
+        raw = raw.split(":", 1)[0]
+    raw = re.sub(r"\s+", "_", raw)
+    raw = re.sub(r"[^a-z0-9_.-]", "", raw)
+    return raw[:64] or "unknown"
+
+
+def _build_parse_error_clusters(audit_log: Path, *, max_records: int = 10000) -> list[dict[str, Any]]:
+    if not audit_log.exists():
+        return []
+    lines = audit_log.read_text(encoding="utf-8").splitlines()[-max_records:]
+    clusters: dict[str, dict[str, Any]] = {}
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            item = json.loads(line)
+        except Exception:
+            continue
+        if not isinstance(item, dict):
+            continue
+        action = str(item.get("action_taken") or "").strip().lower()
+        category = str(item.get("category") or "").strip().lower()
+        error = str(item.get("error") or "").strip()
+        is_parse = (
+            action == "move_route_uncertain_parse_failure"
+            or category == "parse_error"
+            or error.lower().startswith("parse_failed:")
+        )
+        if not is_parse:
+            continue
+        key = _extract_error_cluster_key(error or action or category)
+        cluster = clusters.setdefault(
+            key,
+            {
+                "key": key,
+                "count": 0,
+                "mailboxes": Counter(),
+                "senders": Counter(),
+                "sample_errors": [],
+            },
+        )
+        cluster["count"] += 1
+        mailbox_id = str(item.get("mailbox_id") or "").strip()
+        sender = str(item.get("sender") or item.get("sender_sha256") or "").strip()
+        if mailbox_id:
+            cluster["mailboxes"][mailbox_id] += 1
+        if sender:
+            cluster["senders"][sender] += 1
+        if error and len(cluster["sample_errors"]) < 3:
+            cluster["sample_errors"].append(error[:200])
+
+    out: list[dict[str, Any]] = []
+    for cluster in clusters.values():
+        out.append(
+            {
+                "key": cluster["key"],
+                "count": int(cluster["count"]),
+                "top_mailboxes": _top_items(dict(cluster["mailboxes"]), limit=3),
+                "top_senders": _top_items(dict(cluster["senders"]), limit=3),
+                "sample_errors": list(cluster["sample_errors"]),
+            }
+        )
+    out.sort(key=lambda x: (-int(x["count"]), str(x["key"])))
+    return out[:10]
+
+
 def _build_proposals(
     *,
     current_uncertain: int,
@@ -102,6 +241,8 @@ def _build_proposals(
     parse_errors_total: int,
     top_uncertain_mailboxes: list[dict[str, int | str]],
     uncertain_action_mix: dict[str, int],
+    feedback_summary: dict[str, Any],
+    parse_error_clusters: list[dict[str, Any]],
 ) -> list[dict[str, str]]:
     proposals: list[dict[str, str]] = []
 
@@ -132,6 +273,13 @@ def _build_proposals(
             }
         )
     if parse_errors_total > 0:
+        cluster_hint = ""
+        if parse_error_clusters:
+            top_cluster = parse_error_clusters[0]
+            cluster_hint = (
+                f" Focus first on cluster `{top_cluster['key']}` "
+                f"({top_cluster['count']} events)."
+            )
         proposals.append(
             {
                 "kind": "parser",
@@ -139,7 +287,7 @@ def _build_proposals(
                 "title": "Harden parser handling for recurring parse failures",
                 "suggested_change": (
                     "Inspect recent parse_error history and add targeted charset or MIME normalization before "
-                    "relaxing routing logic."
+                    f"relaxing routing logic.{cluster_hint}"
                 ),
             }
         )
@@ -163,6 +311,27 @@ def _build_proposals(
                 "suggested_change": "Continue monitoring and wait for a larger uncertain or parse_error sample.",
             }
         )
+    wrong_rate_by_kind = feedback_summary.get("wrong_rate_by_kind", {})
+    kind_volume = {
+        "rule_engine": float(max(uncertain_routes, 0)),
+        "prompt": float(max(int(uncertain_action_mix.get("move_route_uncertain", 0)), 0)),
+        "parser": float(max(parse_errors_total, 0)),
+        "ops": float(max(current_failed + cleanup_pending, 0)),
+    }
+    feedback_records = int(feedback_summary.get("records", 0) or 0)
+    stability = min(1.0, feedback_records / 20.0) if feedback_records > 0 else 0.2
+    for item in proposals:
+        kind = str(item.get("kind", "ops"))
+        error_before = float(wrong_rate_by_kind.get(kind, 0.0) or 0.0)
+        if kind == "ops":
+            error_before = 1.0 if (current_failed > 0 or cleanup_pending > 0) else 0.0
+        volume = kind_volume.get(kind, 0.0)
+        impact_score = round(error_before * volume * stability, 4)
+        item["impact_score"] = f"{impact_score:.4f}"
+        item["impact_factors"] = (
+            f"error_before={error_before:.4f}, volume={volume:.1f}, stability={stability:.2f}"
+        )
+    proposals.sort(key=lambda x: (-float(str(x.get("impact_score", "0"))), str(x.get("kind", ""))))
     return proposals
 
 
@@ -171,6 +340,7 @@ def build_quality_learning_payload(
     state_db: Path,
     audit_log: Path,
     window_days: int | None = None,
+    feedback_log: Path | None = None,
 ) -> dict[str, Any]:
     state_summary = summarize_state(state_db)
     quality = build_quality_payload(audit_log, window_days=window_days)
@@ -186,6 +356,8 @@ def build_quality_learning_payload(
     recurring_message_id_domains = [
         domain for domain, count in uncertain_message_id_domains.items() if count >= 2
     ]
+    feedback_summary = _load_feedback_summary(feedback_log or Path("logs/quality-feedback.jsonl"))
+    parse_error_clusters = _build_parse_error_clusters(audit_log)
 
     recommendations: list[str] = []
     top_uncertain_mailboxes = _top_items(uncertain_by_mailbox)
@@ -225,6 +397,8 @@ def build_quality_learning_payload(
         parse_errors_total=parse_errors_total,
         top_uncertain_mailboxes=top_uncertain_mailboxes,
         uncertain_action_mix=dict(sorted(uncertain_actions.items())),
+        feedback_summary=feedback_summary,
+        parse_error_clusters=parse_error_clusters,
     )
     if recurring_message_id_domains:
         for proposal in proposals:
@@ -256,6 +430,8 @@ def build_quality_learning_payload(
         "recent_uncertain": recent_uncertain[:10],
         "recent_failures": quality.get("recent_failures", [])[:10],
         "uncertain_message_id_domains": uncertain_message_id_domains,
+        "feedback_summary": feedback_summary,
+        "parse_error_clusters": parse_error_clusters,
         "proposals": proposals,
         "proposal_counts": dict(sorted(proposal_counts.items())),
         "recommendations": recommendations,
@@ -329,8 +505,14 @@ def run_quality_learning(
     audit_log: Path,
     output_dir: Path,
     window_days: int | None = None,
+    feedback_log: Path | None = None,
 ) -> dict[str, Any]:
-    payload = build_quality_learning_payload(state_db=state_db, audit_log=audit_log, window_days=window_days)
+    payload = build_quality_learning_payload(
+        state_db=state_db,
+        audit_log=audit_log,
+        window_days=window_days,
+        feedback_log=feedback_log,
+    )
     output_dir.mkdir(parents=True, exist_ok=True)
     stamp = _utc_stamp()
     json_path = output_dir / f"quality-learning-{stamp}.json"
@@ -367,6 +549,11 @@ def main() -> None:
         default=None,
         help="Optional rolling window size for audit analysis. Example: 14",
     )
+    parser.add_argument(
+        "--feedback-log",
+        default="logs/quality-feedback.jsonl",
+        help="Path to operator feedback JSONL used for impact-weighted proposal scoring.",
+    )
     args = parser.parse_args()
 
     payload = run_quality_learning(
@@ -374,6 +561,7 @@ def main() -> None:
         audit_log=Path(args.audit_log),
         output_dir=Path(args.output_dir),
         window_days=args.window_days,
+        feedback_log=Path(args.feedback_log),
     )
     print(json.dumps(payload, ensure_ascii=False, indent=2))
 

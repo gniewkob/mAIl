@@ -30,6 +30,8 @@ def test_parse_plain_text_email() -> None:
 
     assert parsed.subject == "Pytanie o termin"
     assert "wolny termin" in parsed.normalized_body
+    assert parsed.headers.get("from") == "Klient <client@example.com>"
+    assert parsed.headers.get("subject") == "Pytanie o termin"
     assert parsed.attachment_metadata == []
 
 

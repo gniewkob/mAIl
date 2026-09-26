@@ -79,6 +79,11 @@ def _render(mailbox: MailboxConfig, policy: SievePolicy) -> str:
     spam_headers = " or ".join(
         f'header :contains "{header}" {_sieve_list(policy.spam_levels)}' for header in policy.spam_headers
     )
+    source_folder = mailbox.imap_source_folder.strip()
+    if source_folder.upper() == "INBOX":
+        default_action = "keep;"
+    else:
+        default_action = f'fileinto "{source_folder}";'
     return f"""require ["fileinto", "mailbox", "copy", "variables", "envelope", "imap4flags"];
 
 # Unified Sieve policy for mAIl (generated).
@@ -88,7 +93,7 @@ def _render(mailbox: MailboxConfig, policy: SievePolicy) -> str:
 if anyof (
     {spam_headers}
 ) {{
-    fileinto "{mailbox.imap_spam_folder}";
+    fileinto :copy "{mailbox.imap_spam_folder}";
     stop;
 }}
 
@@ -98,7 +103,7 @@ if anyof (
     address :contains ["from", "reply-to"] {_sieve_list(policy.billing_sender_keywords)}
 ) {{
     addflag "\\\\Flagged";
-    fileinto "{mailbox.imap_billing_folder}";
+    fileinto :copy "{mailbox.imap_billing_folder}";
     stop;
 }}
 
@@ -107,7 +112,7 @@ if anyof (
     address :contains "from" {_sieve_list(policy.system_sender_keywords)},
     header :contains "subject" {_sieve_list(policy.system_subject_keywords)}
 ) {{
-    fileinto "{mailbox.imap_system_folder}";
+    fileinto :copy "{mailbox.imap_system_folder}";
     stop;
 }}
 
@@ -117,12 +122,12 @@ if anyof (
     header :contains "Precedence" {_sieve_list(policy.newsletter_precedence_keywords)},
     header :contains "subject" {_sieve_list(policy.newsletter_subject_keywords)}
 ) {{
-    fileinto "{mailbox.imap_newsletter_folder}";
+    fileinto :copy "{mailbox.imap_newsletter_folder}";
     stop;
 }}
 
 # 5) Default: one shared worker entrypoint
-fileinto "{mailbox.imap_source_folder}";
+{default_action}
 """
 
 

@@ -7,7 +7,7 @@ from collections import Counter
 from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from .config import Settings
 from .quality_learning_cli import build_quality_learning_payload
@@ -20,6 +20,7 @@ _SUBJECT_LIST_RE = re.compile(r'header\s*:contains\s*"subject"\s*\[(?P<items>.*?
 _ADDRESS_LIST_RE = re.compile(r'address\s*:contains\s*\[[^\]]*\]\s*\[(?P<items>.*?)\]', re.IGNORECASE | re.DOTALL)
 _PRECEDENCE_LIST_RE = re.compile(r'header\s*:contains\s*"precedence"\s*\[(?P<items>.*?)\]', re.IGNORECASE | re.DOTALL)
 _QUOTED_RE = re.compile(r'"([^"]+)"')
+LearnerMode = Literal["shadow", "propose", "autopromote"]
 
 
 def _resolve_signals_dir(raw: str) -> Path:
@@ -203,6 +204,86 @@ def _build_mailbox_thresholds(settings: Settings, quality_payload: dict[str, Any
     }
 
 
+def _autopromote_blockers(quality_payload: dict[str, Any]) -> list[str]:
+    blockers: list[str] = []
+    state = quality_payload.get("state", {})
+    if isinstance(state, dict):
+        if int(state.get("failed", 0) or 0) > 0:
+            blockers.append("state.failed > 0")
+        if int(state.get("cleanup_pending", 0) or 0) > 0:
+            blockers.append("state.cleanup_pending > 0")
+
+    proposals = quality_payload.get("proposals", [])
+    if isinstance(proposals, list):
+        for proposal in proposals:
+            if not isinstance(proposal, dict):
+                continue
+            if proposal.get("kind") == "ops" and proposal.get("priority") == "high":
+                blockers.append("high-priority ops proposal present")
+                break
+    return blockers
+
+
+def _estimate_policy_change_size(base_policy: SievePolicy, candidate_policy: SievePolicy) -> int:
+    fields = (
+        "billing_subject_keywords",
+        "billing_sender_keywords",
+        "system_sender_keywords",
+        "system_subject_keywords",
+        "newsletter_subject_keywords",
+        "newsletter_precedence_keywords",
+    )
+    delta = 0
+    for field in fields:
+        base_values = set(getattr(base_policy, field))
+        candidate_values = set(getattr(candidate_policy, field))
+        delta += len(candidate_values - base_values)
+    return delta
+
+
+def _build_challenger_decision(
+    *,
+    quality_payload: dict[str, Any],
+    base_policy: SievePolicy,
+    candidate_policy: SievePolicy,
+    min_impact_score: float,
+    max_policy_delta: int,
+) -> dict[str, Any]:
+    proposals = quality_payload.get("proposals", [])
+    impact_values: list[float] = []
+    if isinstance(proposals, list):
+        for item in proposals:
+            if not isinstance(item, dict):
+                continue
+            raw = item.get("impact_score")
+            if raw is None:
+                continue
+            try:
+                impact_values.append(float(raw))
+            except Exception:
+                continue
+    max_impact = max(impact_values) if impact_values else 0.0
+    policy_delta = _estimate_policy_change_size(base_policy, candidate_policy)
+    reasons: list[str] = []
+    promote = True
+    if max_impact < min_impact_score:
+        promote = False
+        reasons.append(f"impact_score<{min_impact_score:.4f}")
+    if policy_delta > max_policy_delta:
+        promote = False
+        reasons.append(f"policy_delta>{max_policy_delta}")
+    return {
+        "promote": promote,
+        "reasons": reasons,
+        "max_impact_score": round(max_impact, 4),
+        "policy_delta": policy_delta,
+        "thresholds": {
+            "min_impact_score": min_impact_score,
+            "max_policy_delta": max_policy_delta,
+        },
+    }
+
+
 def run_weekly_autotune(
     *,
     settings: Settings,
@@ -221,6 +302,10 @@ def run_weekly_autotune(
     deploy_strict_verify: bool,
     deploy_canary_count: int,
     deploy_canary_max_soft_pass_share: float,
+    learner_mode: LearnerMode = "shadow",
+    shadow_output_dir: Path = Path("logs/weekly-autotune-shadow"),
+    challenger_min_impact_score: float = 0.0,
+    challenger_max_policy_delta: int = 20,
 ) -> dict[str, Any]:
     quality_payload = build_quality_learning_payload(
         state_db=settings.state_db_path,
@@ -259,10 +344,32 @@ def run_weekly_autotune(
             max_total=max_keywords_per_bucket,
         ),
     )
-    _save_policy(auto_policy_path, merged)
     mailbox_thresholds = _build_mailbox_thresholds(settings, quality_payload)
-    mailbox_thresholds_path.parent.mkdir(parents=True, exist_ok=True)
-    mailbox_thresholds_path.write_text(json.dumps(mailbox_thresholds, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    challenger = _build_challenger_decision(
+        quality_payload=quality_payload,
+        base_policy=base_policy,
+        candidate_policy=merged,
+        min_impact_score=challenger_min_impact_score,
+        max_policy_delta=challenger_max_policy_delta,
+    )
+    blockers = _autopromote_blockers(quality_payload)
+    effective_mode: LearnerMode = learner_mode
+    if learner_mode == "autopromote" and blockers:
+        effective_mode = "propose"
+    if learner_mode == "autopromote" and not challenger["promote"]:
+        effective_mode = "propose"
+
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    shadow_output_dir.mkdir(parents=True, exist_ok=True)
+    proposed_policy_path = shadow_output_dir / f"weekly-autotune-{stamp}.policy.proposed.json"
+    proposed_thresholds_path = shadow_output_dir / f"weekly-autotune-{stamp}.thresholds.proposed.json"
+    proposed_policy_path.write_text(json.dumps(asdict(merged), ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    proposed_thresholds_path.write_text(json.dumps(mailbox_thresholds, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+    if effective_mode == "autopromote":
+        _save_policy(auto_policy_path, merged)
+        mailbox_thresholds_path.parent.mkdir(parents=True, exist_ok=True)
+        mailbox_thresholds_path.write_text(json.dumps(mailbox_thresholds, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
     generated_sieve_dir.mkdir(parents=True, exist_ok=True)
     generated_files: list[str] = []
@@ -273,7 +380,6 @@ def run_weekly_autotune(
         generated_files.append(str(path))
 
     learning_output_dir.mkdir(parents=True, exist_ok=True)
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     learning_json = learning_output_dir / f"weekly-autotune-{stamp}.quality.json"
     learning_payload: dict[str, Any] = {
         "generated_at": stamp,
@@ -283,7 +389,7 @@ def run_weekly_autotune(
     }
 
     deploy_payload: dict[str, Any] | None = None
-    if deploy:
+    if deploy and effective_mode == "autopromote":
         mailbox_ids = [mailbox.mailbox_id for mailbox in settings.load_mailboxes()]
         canary_count = min(max(deploy_canary_count, 0), len(mailbox_ids))
         canary_ids = mailbox_ids[:canary_count]
@@ -340,7 +446,16 @@ def run_weekly_autotune(
             },
             "results": [x.__dict__ for x in all_results],
         }
+    learner_payload = {
+        "requested_mode": learner_mode,
+        "effective_mode": effective_mode,
+        "autopromote_blockers": blockers,
+        "proposed_policy_path": str(proposed_policy_path),
+        "proposed_thresholds_path": str(proposed_thresholds_path),
+        "champion_challenger": challenger,
+    }
     learning_payload["deploy"] = deploy_payload
+    learning_payload["learner"] = learner_payload
     learning_json.write_text(json.dumps(learning_payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
     return {
@@ -354,6 +469,7 @@ def run_weekly_autotune(
         "quality_summary": quality_payload.get("audit_summary", {}),
         "quality_recommendations": quality_payload.get("recommendations", []),
         "deploy": deploy_payload,
+        "learner": learner_payload,
     }
 
 
@@ -378,6 +494,29 @@ def main() -> None:
     parser.add_argument("--window-days", type=int, default=14, help="Rolling quality window in days.")
     parser.add_argument("--min-count", type=int, default=2, help="Minimum occurrence in Sieve signals to learn a token.")
     parser.add_argument("--max-keywords-per-bucket", type=int, default=80, help="Cap keywords per policy bucket.")
+    parser.add_argument(
+        "--learner-mode",
+        choices=["shadow", "propose", "autopromote"],
+        default="shadow",
+        help="shadow: no production writes; propose: proposals only; autopromote: apply changes with safety gates.",
+    )
+    parser.add_argument(
+        "--shadow-output-dir",
+        default="logs/weekly-autotune-shadow",
+        help="Output directory for proposed learner artifacts.",
+    )
+    parser.add_argument(
+        "--challenger-min-impact-score",
+        type=float,
+        default=0.0,
+        help="Minimum max proposal impact score required for autopromote.",
+    )
+    parser.add_argument(
+        "--challenger-max-policy-delta",
+        type=int,
+        default=20,
+        help="Maximum number of newly learned policy tokens allowed for autopromote.",
+    )
     parser.add_argument("--deploy", action="store_true", help="Deploy generated scripts to server via ManageSieve.")
     parser.add_argument("--deploy-port", type=int, default=4190, help="ManageSieve port.")
     parser.add_argument("--deploy-timeout-seconds", type=int, default=20, help="ManageSieve timeout.")
@@ -408,6 +547,10 @@ def main() -> None:
         window_days=args.window_days,
         min_count=args.min_count,
         max_keywords_per_bucket=args.max_keywords_per_bucket,
+        learner_mode=args.learner_mode,
+        shadow_output_dir=Path(args.shadow_output_dir),
+        challenger_min_impact_score=args.challenger_min_impact_score,
+        challenger_max_policy_delta=args.challenger_max_policy_delta,
         deploy=args.deploy,
         deploy_port=args.deploy_port,
         deploy_timeout_seconds=args.deploy_timeout_seconds,

@@ -32,6 +32,7 @@ class FakeIMAPClient:
         type(self).copied = []
         type(self).flagged = []
         type(self).deleted = []
+        type(self).keywords = []
         type(self).expunged = []
         type(self).validated = []
 
@@ -58,6 +59,10 @@ class FakeIMAPClient:
 
     def delete_message(self, folder: str, uid: str) -> None:
         self.deleted.append((folder, uid))
+
+    def add_keyword(self, folder: str, uid: str, keyword: str) -> str:
+        self.keywords.append((folder, uid, keyword))
+        return keyword
 
     def get_uidvalidity(self, folder: str) -> str | None:
         return "999"
@@ -90,6 +95,9 @@ class FakeMultiMailboxIMAPClient:
 
     def set_flagged(self, folder: str, uid: str) -> None:
         return None
+
+    def add_keyword(self, folder: str, uid: str, keyword: str) -> str:
+        return keyword
 
     def delete_message(self, folder: str, uid: str) -> None:
         return None
@@ -253,6 +261,25 @@ def test_process_inbox_moves_message_when_not_in_dry_run(monkeypatch, tmp_path: 
     audit_lines = (tmp_path / "audit.jsonl").read_text(encoding="utf-8").splitlines()
     payload = json.loads(audit_lines[0])
     assert payload["action_taken"] == "move_route_from_llm"
+
+
+def test_process_inbox_tag_only_keeps_message_in_source_folder(monkeypatch, tmp_path: Path) -> None:
+    from mail_ai_agent.main import process_inbox
+
+    monkeypatch.setattr("mail_ai_agent.main.IMAPClient", FakeIMAPClient)
+    monkeypatch.setattr("mail_ai_agent.main.LLMGateway", FakeLLMGateway)
+    settings = make_settings(tmp_path)
+    settings = settings.model_copy(update={"dry_run": False, "routing_strategy": "tag_only", "imap_tag_prefix": "$AI_"})
+
+    report = process_inbox(settings)
+
+    assert report.processed == 1
+    assert FakeIMAPClient.copied == []
+    assert FakeIMAPClient.deleted == []
+    assert FakeIMAPClient.keywords == [("INBOX.AI-Review", "42", "$AI_question")]
+    audit_lines = (tmp_path / "audit.jsonl").read_text(encoding="utf-8").splitlines()
+    payload = json.loads(audit_lines[0])
+    assert payload["action_taken"] == "tag_route_from_llm"
 
 
 def test_process_inbox_marks_cleanup_pending_when_delete_fails(monkeypatch, tmp_path: Path) -> None:
@@ -1016,3 +1043,4 @@ def test_process_inbox_cleans_source_message_for_processed_message_id_mismatch(m
 
     audit_lines = [json.loads(line) for line in (tmp_path / "audit.jsonl").read_text(encoding="utf-8").splitlines()]
     assert audit_lines[-1]["action_taken"] == "cleanup_source_conflict_duplicate"
+

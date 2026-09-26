@@ -17,6 +17,9 @@ T = TypeVar("T")
 _UID_RE = _re.compile(r"\bUID\s+(\d+)\b", _re.IGNORECASE)
 _INTERNALDATE_RE = _re.compile(r'INTERNALDATE\s+"([^"]+)"', _re.IGNORECASE)
 _LIST_RE = _re.compile(r"^\((?P<flags>[^)]*)\)\s+(?P<delimiter>NIL|\"[^\"]*\")\s+(?P<name>.+)$")
+_FLAGS_RE = _re.compile(r"FLAGS\s+\(([^)]*)\)", _re.IGNORECASE)
+_KEYWORD_SANITIZE_RE = _re.compile(r"[^A-Za-z0-9$_.-]+")
+_MESSAGE_ID_HEADER_RE = _re.compile(r"^Message-ID:\s*(.+)$", _re.IGNORECASE | _re.MULTILINE)
 
 _AUTH_FAILURE_KEYWORDS = (
     "AUTHENTICATIONFAILED",
@@ -266,6 +269,218 @@ class IMAPClient(AbstractContextManager["IMAPClient"]):
 
         return self._run_with_retry("fetch_candidates", _fetch)
 
+    def list_uids(self, folder: str) -> list[str]:
+        def _list_uids() -> list[str]:
+            if self.connection is None:
+                raise RuntimeError("IMAP connection not established")
+            status, _ = self.connection.select(folder, readonly=True)
+            if status != "OK":
+                raise RuntimeError(f"Unable to select folder {folder}")
+            status, data = self.connection.uid("search", None, "ALL")  # type: ignore[arg-type]
+            if status != "OK":
+                raise RuntimeError(f"Unable to search all messages in {folder}")
+            raw = data[0] if data and data[0] is not None else b""
+            return [uid.decode("utf-8", errors="ignore") for uid in raw.split() if uid.isdigit()]
+
+        return self._run_with_retry("list_uids", _list_uids)
+
+    def fetch_message_id_header(self, folder: str, uid: str) -> str | None:
+        def _fetch_header() -> str | None:
+            if self.connection is None:
+                raise RuntimeError("IMAP connection not established")
+            status, _ = self.connection.select(folder, readonly=True)
+            if status != "OK":
+                raise RuntimeError(f"Unable to select folder {folder}")
+            status, data = self.connection.uid("fetch", uid, "(BODY.PEEK[HEADER.FIELDS (MESSAGE-ID)])")
+            if status != "OK" or not data:
+                return None
+            for item in data:
+                if not isinstance(item, tuple) or len(item) < 2:
+                    continue
+                raw_bytes = item[1]
+                if not isinstance(raw_bytes, bytes):
+                    continue
+                text = raw_bytes.decode("utf-8", errors="ignore")
+                match = _MESSAGE_ID_HEADER_RE.search(text)
+                if match:
+                    return match.group(1).strip()
+            return None
+
+        return self._run_with_retry("fetch_message_id_header", _fetch_header)
+
+    def fetch_message_id_headers(self, folder: str, uids: list[str], *, batch_size: int = 200) -> dict[str, str | None]:
+        normalized_uids = [str(uid) for uid in uids if str(uid).isdigit()]
+        if not normalized_uids:
+            return {}
+
+        def _fetch_headers() -> dict[str, str | None]:
+            if self.connection is None:
+                raise RuntimeError("IMAP connection not established")
+            status, _ = self.connection.select(folder, readonly=True)
+            if status != "OK":
+                raise RuntimeError(f"Unable to select folder {folder}")
+            by_uid: dict[str, str | None] = {uid: None for uid in normalized_uids}
+            for chunk in _chunked(normalized_uids, batch_size):
+                status, data = self.connection.uid(
+                    "fetch",
+                    ",".join(chunk),
+                    "(UID BODY.PEEK[HEADER.FIELDS (MESSAGE-ID)])",
+                )
+                if status != "OK":
+                    raise RuntimeError(f"Unable to fetch Message-ID headers in {folder}")
+                for item in data or []:
+                    if not isinstance(item, tuple) or len(item) < 2:
+                        continue
+                    metadata_raw = item[0]
+                    raw_bytes = item[1]
+                    metadata = (
+                        metadata_raw.decode("utf-8", errors="ignore")
+                        if isinstance(metadata_raw, bytes)
+                        else str(metadata_raw)
+                    )
+                    uid_match = _UID_RE.search(metadata)
+                    if not uid_match:
+                        continue
+                    current_uid = uid_match.group(1)
+                    if current_uid not in by_uid:
+                        continue
+                    if isinstance(raw_bytes, bytes):
+                        text = raw_bytes.decode("utf-8", errors="ignore")
+                        match = _MESSAGE_ID_HEADER_RE.search(text)
+                        by_uid[current_uid] = match.group(1).strip() if match else None
+            return by_uid
+
+        return self._run_with_retry("fetch_message_id_headers", _fetch_headers)
+
+    def fetch_uid_keywords(self, folder: str, uids: list[str], *, batch_size: int = 200) -> dict[str, set[str]]:
+        normalized_uids = [str(uid) for uid in uids if str(uid).isdigit()]
+        if not normalized_uids:
+            return {}
+
+        def _fetch_keywords() -> dict[str, set[str]]:
+            if self.connection is None:
+                raise RuntimeError("IMAP connection not established")
+            status, _ = self.connection.select(folder, readonly=True)
+            if status != "OK":
+                raise RuntimeError(f"Unable to select folder {folder}")
+            by_uid: dict[str, set[str]] = {uid: set() for uid in normalized_uids}
+            for chunk in _chunked(normalized_uids, batch_size):
+                status, data = self.connection.uid("fetch", ",".join(chunk), "(UID FLAGS)")
+                if status != "OK":
+                    raise RuntimeError(f"Unable to fetch flags in {folder}")
+                for item in data or []:
+                    if isinstance(item, tuple):
+                        if len(item) < 1:
+                            continue
+                        metadata_raw = item[0]
+                    elif isinstance(item, bytes):
+                        metadata_raw = item
+                    else:
+                        continue
+                    metadata = (
+                        metadata_raw.decode("utf-8", errors="ignore")
+                        if isinstance(metadata_raw, bytes)
+                        else str(metadata_raw)
+                    )
+                    uid_match = _UID_RE.search(metadata)
+                    if not uid_match:
+                        continue
+                    current_uid = uid_match.group(1)
+                    if current_uid not in by_uid:
+                        continue
+                    flags_match = _FLAGS_RE.search(metadata)
+                    if not flags_match:
+                        by_uid[current_uid] = set()
+                        continue
+                    raw_flags = flags_match.group(1).strip()
+                    by_uid[current_uid] = {flag for flag in raw_flags.split() if flag}
+            return by_uid
+
+        return self._run_with_retry("fetch_uid_keywords", _fetch_keywords)
+
+    def message_exists_with_message_id(self, folder: str, message_id: str) -> bool:
+        escaped = _escape_imap_search_value(message_id)
+        if not escaped:
+            return False
+
+        def _exists() -> bool:
+            if self.connection is None:
+                raise RuntimeError("IMAP connection not established")
+            status, _ = self.connection.select(folder, readonly=True)
+            if status != "OK":
+                raise RuntimeError(f"Unable to select folder {folder}")
+            status, data = self.connection.uid("search", None, "HEADER", "Message-ID", escaped)  # type: ignore[arg-type]
+            if status != "OK":
+                raise RuntimeError(f"Unable to search Message-ID in {folder}")
+            raw = data[0] if data and data[0] is not None else b""
+            return bool(raw.strip())
+
+        return self._run_with_retry("message_exists_with_message_id", _exists)
+
+    def find_uids_by_message_id(self, folder: str, message_id: str) -> list[str]:
+        escaped = _escape_imap_search_value(message_id)
+        if not escaped:
+            return []
+
+        def _find_uids() -> list[str]:
+            if self.connection is None:
+                raise RuntimeError("IMAP connection not established")
+            status, _ = self.connection.select(folder, readonly=True)
+            if status != "OK":
+                raise RuntimeError(f"Unable to select folder {folder}")
+            status, data = self.connection.uid("search", None, "HEADER", "Message-ID", escaped)  # type: ignore[arg-type]
+            if status != "OK":
+                raise RuntimeError(f"Unable to search Message-ID in {folder}")
+            raw = data[0] if data and data[0] is not None else b""
+            return [uid.decode("utf-8", errors="ignore") for uid in raw.split() if uid.isdigit()]
+
+        return self._run_with_retry("find_uids_by_message_id", _find_uids)
+
+    def message_exists_with_message_id_and_keyword(self, folder: str, message_id: str, keyword: str) -> bool:
+        escaped = _escape_imap_search_value(message_id)
+        if not escaped:
+            return False
+        normalized_keyword = _normalize_imap_keyword(keyword)
+
+        def _exists() -> bool:
+            if self.connection is None:
+                raise RuntimeError("IMAP connection not established")
+            status, _ = self.connection.select(folder, readonly=True)
+            if status != "OK":
+                raise RuntimeError(f"Unable to select folder {folder}")
+            status, data = self.connection.uid(  # type: ignore[arg-type]
+                "search",
+                None,
+                "HEADER",
+                "Message-ID",
+                escaped,
+                "KEYWORD",
+                normalized_keyword,
+            )
+            if status != "OK":
+                raise RuntimeError(f"Unable to search Message-ID+KEYWORD in {folder}")
+            raw = data[0] if data and data[0] is not None else b""
+            return bool(raw.strip())
+
+        return self._run_with_retry("message_exists_with_message_id_and_keyword", _exists)
+
+    def message_exists_with_keyword(self, folder: str, keyword: str) -> bool:
+        normalized_keyword = _normalize_imap_keyword(keyword)
+
+        def _exists() -> bool:
+            if self.connection is None:
+                raise RuntimeError("IMAP connection not established")
+            status, _ = self.connection.select(folder, readonly=True)
+            if status != "OK":
+                raise RuntimeError(f"Unable to select folder {folder}")
+            status, data = self.connection.uid("search", None, "KEYWORD", normalized_keyword)  # type: ignore[arg-type]
+            if status != "OK":
+                raise RuntimeError(f"Unable to search keyword in {folder}")
+            raw = data[0] if data and data[0] is not None else b""
+            return bool(raw.strip())
+
+        return self._run_with_retry("message_exists_with_keyword", _exists)
+
     def copy_message(self, source_folder: str, uid: str, target_folder: str) -> str | None:
         def _copy() -> str | None:
             if self.connection is None:
@@ -311,6 +526,22 @@ class IMAPClient(AbstractContextManager["IMAPClient"]):
                 raise RuntimeError(f"Unable to flag message {uid}")
 
         self._run_with_retry("set_flagged", _flag)
+
+    def add_keyword(self, folder: str, uid: str, keyword: str) -> str:
+        normalized = _normalize_imap_keyword(keyword)
+
+        def _store_keyword() -> None:
+            if self.connection is None:
+                raise RuntimeError("IMAP connection not established")
+            status, _ = self.connection.select(folder)
+            if status != "OK":
+                raise RuntimeError(f"Unable to select folder {folder}")
+            status, _ = self.connection.uid("store", uid, "+FLAGS.SILENT", f"({normalized})")
+            if status != "OK":
+                raise RuntimeError(f"Unable to add keyword {normalized} to message {uid}")
+
+        self._run_with_retry("add_keyword", _store_keyword)
+        return normalized
 
     def mark_deleted(self, folder: str, uid: str) -> None:
         def _mark_deleted() -> None:
@@ -437,3 +668,26 @@ def _parse_list_response(item: object) -> str | None:
     if name.startswith('"') and name.endswith('"'):
         return name[1:-1].replace(r"\\", "\\").replace(r"\"", '"')
     return name
+
+
+def _normalize_imap_keyword(raw: str) -> str:
+    value = _KEYWORD_SANITIZE_RE.sub("_", raw.strip())
+    value = value.strip("._-")
+    if not value:
+        value = "AI"
+    if not value[0].isalpha() and value[0] != "$":
+        value = f"K_{value}"
+    return value[:64]
+
+
+def _escape_imap_search_value(raw: str | None) -> str:
+    value = str(raw or "").strip()
+    if not value:
+        return ""
+    return value.replace("\\", "\\\\").replace('"', "")
+
+
+def _chunked(values: list[str], size: int) -> Generator[list[str], None, None]:
+    chunk_size = max(1, int(size))
+    for idx in range(0, len(values), chunk_size):
+        yield values[idx:idx + chunk_size]

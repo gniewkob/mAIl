@@ -165,12 +165,22 @@ class Settings(BaseSettings):
 
     move_confidence_threshold: float = Field(default=0.75, alias="MOVE_CONFIDENCE_THRESHOLD")
     other_move_confidence_threshold: float = Field(default=0.50, alias="OTHER_MOVE_CONFIDENCE_THRESHOLD")
+    routing_strategy: Literal["move", "tag_only", "copy_plus_tag"] = Field(default="move", alias="ROUTING_STRATEGY")
+    imap_tag_prefix: str = Field(default="$AI_", alias="IMAP_TAG_PREFIX")
     flag_confidence_threshold: float = Field(default=0.80, alias="FLAG_CONFIDENCE_THRESHOLD")
     draft_confidence_threshold: float = Field(default=0.85, alias="DRAFT_CONFIDENCE_THRESHOLD")
     mailbox_thresholds_path: Path | None = Field(
         default=Path("config/mailbox_thresholds.auto.json"),
         alias="MAILBOX_THRESHOLDS_PATH",
     )
+    exploration_rate: float = Field(default=0.0, alias="EXPLORATION_RATE")
+    exploration_min_confidence: float = Field(default=0.90, alias="EXPLORATION_MIN_CONFIDENCE")
+    exploration_max_uncertain_per_mailbox: int = Field(default=25, alias="EXPLORATION_MAX_UNCERTAIN_PER_MAILBOX")
+    exploration_max_failed_per_mailbox: int = Field(default=5, alias="EXPLORATION_MAX_FAILED_PER_MAILBOX")
+    enable_sender_priors: bool = Field(default=False, alias="ENABLE_SENDER_PRIORS")
+    sender_priors_path: Path | None = Field(default=Path("config/sender_priors.auto.json"), alias="SENDER_PRIORS_PATH")
+    sender_priors_min_samples: int = Field(default=5, alias="SENDER_PRIORS_MIN_SAMPLES")
+    sender_priors_min_share: float = Field(default=0.92, alias="SENDER_PRIORS_MIN_SHARE")
 
     max_body_chars: int = Field(default=12000, alias="MAX_BODY_CHARS")
     max_retries: int = Field(default=3, alias="MAX_RETRIES")
@@ -214,6 +224,7 @@ class Settings(BaseSettings):
         _validate_safe_path(self.draft_dir, "DRAFT_DIR")
         _validate_safe_path(self.mailboxes_config_path, "MAILBOXES_CONFIG_PATH")
         _validate_safe_path(self.mailbox_thresholds_path, "MAILBOX_THRESHOLDS_PATH")
+        _validate_safe_path(self.sender_priors_path, "SENDER_PRIORS_PATH")
         return self
 
     def default_mailbox_id(self) -> str:

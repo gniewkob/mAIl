@@ -165,6 +165,59 @@ def test_summarize_state_includes_uncertain_by_mailbox(tmp_path: Path) -> None:
     assert summary["failed_by_mailbox"] == {}
 
 
+def test_summarize_state_splits_uncertain_exploration_and_error(tmp_path: Path) -> None:
+    manager = StateManager(tmp_path / "state.sqlite")
+    lease_exploration = manager.acquire_lease(
+        mailbox_id="inbox_a",
+        message_id="msg-1",
+        fingerprint="fp-1",
+        imap_uid="10",
+        sender="client@example.com",
+        subject="Pytanie",
+        source_folder="INBOX.AI-Review",
+        internaldate=None,
+        worker_id="worker-1",
+        lease_seconds=60,
+        max_retries=3,
+    )
+    assert lease_exploration.record is not None
+    manager.mark_uncertain(
+        lease_exploration.record.id,
+        category="other",
+        confidence=0.2,
+        action_taken="move_route_uncertain_exploration",
+    )
+
+    lease_error = manager.acquire_lease(
+        mailbox_id="inbox_a",
+        message_id="msg-2",
+        fingerprint="fp-2",
+        imap_uid="11",
+        sender="client2@example.com",
+        subject="Drugie pytanie",
+        source_folder="INBOX.AI-Review",
+        internaldate=None,
+        worker_id="worker-1",
+        lease_seconds=60,
+        max_retries=3,
+    )
+    assert lease_error.record is not None
+    manager.mark_uncertain(
+        lease_error.record.id,
+        category="other",
+        confidence=0.2,
+        action_taken="move_route_uncertain_llm_failure",
+    )
+
+    summary = summarize_state(tmp_path / "state.sqlite")
+
+    assert summary["uncertain_by_mailbox"] == {"inbox_a": 2}
+    assert summary["uncertain_exploration"] == 1
+    assert summary["uncertain_error"] == 1
+    assert summary["uncertain_exploration_by_mailbox"] == {"inbox_a": 1}
+    assert summary["uncertain_error_by_mailbox"] == {"inbox_a": 1}
+
+
 def test_summarize_state_includes_failed_by_mailbox(tmp_path: Path) -> None:
     manager = StateManager(tmp_path / "state.sqlite")
     lease = manager.acquire_lease(

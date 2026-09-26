@@ -10,6 +10,9 @@ STATE_DB="${STATE_DB:-data/multi-prod-state.sqlite}"
 AUDIT_LOG="${AUDIT_LOG:-logs/multi-prod-audit.jsonl}"
 STDOUT_LOG="${STDOUT_LOG:-logs/launchd-multi-prod-stdout.log}"
 STDERR_LOG="${STDERR_LOG:-logs/launchd-multi-prod-stderr.log}"
+MAX_UNCERTAIN="${MAX_UNCERTAIN:-3}"
+MAX_UNCERTAIN_ERROR="${MAX_UNCERTAIN_ERROR:-0}"
+MAX_UNCERTAIN_EXPLORATION="${MAX_UNCERTAIN_EXPLORATION:-$MAX_UNCERTAIN}"
 
 echo "== Preflight =="
 "$PYTHON_BIN" -m mail_ai_agent.preflight_cli --env-file "$ENV_FILE"
@@ -23,7 +26,9 @@ echo "== Healthcheck =="
   --stdout-log "$STDOUT_LOG" \
   --stderr-log "$STDERR_LOG" \
   --recent-audit-limit 50 \
-  --max-uncertain 0
+  --max-uncertain "$MAX_UNCERTAIN" \
+  --max-uncertain-error "$MAX_UNCERTAIN_ERROR" \
+  --max-uncertain-exploration "$MAX_UNCERTAIN_EXPLORATION"
 
 echo
 echo "== Status =="

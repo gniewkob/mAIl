@@ -45,6 +45,8 @@ def build_alert_message(payload: dict[str, object], *, service_name: str) -> str
         (
             f"processed={state.get('processed', 0)} "
             f"uncertain={state.get('uncertain', 0)} "
+            f"uncertain_error={state.get('uncertain_error', 0)} "
+            f"uncertain_exploration={state.get('uncertain_exploration', 0)} "
             f"failed={state.get('failed', 0)} "
             f"cleanup_pending={state.get('cleanup_pending', 0)}"
         ),
@@ -81,10 +83,27 @@ def main() -> None:
     parser.add_argument("--recent-audit-limit", type=int, default=50, help="How many recent audit records to inspect")
     parser.add_argument("--recent-audit-max-age-minutes", type=int, default=15, help="Only inspect audit records newer than this many minutes")
     parser.add_argument("--max-uncertain", type=int, default=0, help="Maximum tolerated uncertain rows in state")
+    parser.add_argument(
+        "--max-uncertain-error",
+        type=int,
+        default=None,
+        help="Maximum tolerated non-exploration uncertain rows (defaults to max_uncertain when omitted).",
+    )
+    parser.add_argument(
+        "--max-uncertain-exploration",
+        type=int,
+        default=None,
+        help="Maximum tolerated exploration uncertain rows (defaults to max_uncertain when omitted).",
+    )
     parser.add_argument("--service-name", default="mail-ai-prod", help="Service label used in the alert message")
     parser.add_argument("--webhook-url", default=None, help="Optional webhook URL")
     parser.add_argument("--send-on-ok", action="store_true", help="Also send webhook when healthcheck is green")
     args = parser.parse_args()
+
+    max_uncertain_error = args.max_uncertain if args.max_uncertain_error is None else int(args.max_uncertain_error)
+    max_uncertain_exploration = (
+        args.max_uncertain if args.max_uncertain_exploration is None else int(args.max_uncertain_exploration)
+    )
 
     payload = build_health_payload(
         state_db=Path(args.state_db),
@@ -95,6 +114,8 @@ def main() -> None:
         recent_audit_limit=args.recent_audit_limit,
         recent_audit_max_age_minutes=args.recent_audit_max_age_minutes,
         max_uncertain=args.max_uncertain,
+        max_uncertain_error=max_uncertain_error,
+        max_uncertain_exploration=max_uncertain_exploration,
     )
     message = build_alert_message(payload, service_name=args.service_name)
     print(json.dumps({"message": message, "payload": payload}, ensure_ascii=False, indent=2))

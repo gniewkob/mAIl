@@ -223,6 +223,133 @@ def test_get_uidvalidity_reads_folder_metadata(monkeypatch) -> None:
     assert uidvalidity == "999"
 
 
+def test_add_keyword_stores_custom_imap_keyword(monkeypatch) -> None:
+    mailbox = make_mailbox()
+    connection = FakeFlakyConnection()
+
+    monkeypatch.setattr("mail_ai_agent.imap_client.imaplib.IMAP4_SSL", lambda *_, **__: connection)
+    monkeypatch.setattr("mail_ai_agent.imap_client.time.sleep", lambda _: None)
+
+    with IMAPClient(mailbox) as client:
+        keyword = client.add_keyword("INBOX.AI-Review", "42", "$AI/question")
+
+    assert keyword == "$AI_question"
+    assert connection.store_calls[-1] == ("42", "+FLAGS.SILENT", "($AI_question)")
+
+
+def test_fetch_message_id_headers_parses_batch_response() -> None:
+    from unittest.mock import MagicMock
+
+    mailbox = make_mailbox()
+    client = IMAPClient(mailbox)
+    mock_conn = MagicMock()
+    client.connection = mock_conn
+    mock_conn.select.return_value = ("OK", [b"1"])
+    mock_conn.uid.return_value = (
+        "OK",
+        [
+            (b'1 (UID 1 BODY[HEADER.FIELDS (MESSAGE-ID)] {25}', b"Message-ID: <one@test>\r\n\r\n"),
+            b")",
+            (b'2 (UID 2 BODY[HEADER.FIELDS (MESSAGE-ID)] {25}', b"Message-ID: <two@test>\r\n\r\n"),
+            b")",
+        ],
+    )
+    client._run_with_retry = lambda _name, fn: fn()  # type: ignore[assignment]
+
+    by_uid = client.fetch_message_id_headers("INBOX", ["1", "2"])
+
+    assert by_uid == {"1": "<one@test>", "2": "<two@test>"}
+
+
+def test_fetch_uid_keywords_parses_flags() -> None:
+    from unittest.mock import MagicMock
+
+    mailbox = make_mailbox()
+    client = IMAPClient(mailbox)
+    mock_conn = MagicMock()
+    client.connection = mock_conn
+    mock_conn.select.return_value = ("OK", [b"1"])
+    mock_conn.uid.return_value = (
+        "OK",
+        [
+            (b'1 (UID 1 FLAGS (\\Seen $AI_question))', b""),
+            (b'2 (UID 2 FLAGS ())', b""),
+            b")",
+        ],
+    )
+    client._run_with_retry = lambda _name, fn: fn()  # type: ignore[assignment]
+
+    by_uid = client.fetch_uid_keywords("INBOX", ["1", "2"])
+
+    assert by_uid["1"] == {"\\Seen", "$AI_question"}
+    assert by_uid["2"] == set()
+
+
+def test_fetch_uid_keywords_parses_bytes_only_fetch_rows() -> None:
+    from unittest.mock import MagicMock
+
+    mailbox = make_mailbox()
+    client = IMAPClient(mailbox)
+    mock_conn = MagicMock()
+    client.connection = mock_conn
+    mock_conn.select.return_value = ("OK", [b"1"])
+    mock_conn.uid.return_value = (
+        "OK",
+        [
+            b'1 (UID 1 FLAGS ($AI_offer $AI_system))',
+            b'2 (UID 2 FLAGS (\\Seen))',
+        ],
+    )
+    client._run_with_retry = lambda _name, fn: fn()  # type: ignore[assignment]
+
+    by_uid = client.fetch_uid_keywords("INBOX", ["1", "2"])
+
+    assert by_uid["1"] == {"$AI_offer", "$AI_system"}
+    assert by_uid["2"] == {"\\Seen"}
+
+
+def test_find_uids_by_message_id_returns_uid_list(monkeypatch) -> None:
+    mailbox = make_mailbox()
+    connection = FakeFlakyConnection(search_uids=b"11 12")
+
+    monkeypatch.setattr("mail_ai_agent.imap_client.imaplib.IMAP4_SSL", lambda *_, **__: connection)
+    monkeypatch.setattr("mail_ai_agent.imap_client.time.sleep", lambda _: None)
+
+    with IMAPClient(mailbox) as client:
+        uids = client.find_uids_by_message_id("INBOX", "<x@y>")
+
+    assert uids == ["11", "12"]
+    assert connection.search_args == (None, "HEADER", "Message-ID", "<x@y>")
+
+
+def test_message_exists_with_message_id_and_keyword(monkeypatch) -> None:
+    mailbox = make_mailbox()
+    connection = FakeFlakyConnection(search_uids=b"77")
+
+    monkeypatch.setattr("mail_ai_agent.imap_client.imaplib.IMAP4_SSL", lambda *_, **__: connection)
+    monkeypatch.setattr("mail_ai_agent.imap_client.time.sleep", lambda _: None)
+
+    with IMAPClient(mailbox) as client:
+        exists = client.message_exists_with_message_id_and_keyword("INBOX", "<x@y>", "$AI/question")
+
+    assert exists is True
+    assert connection.search_args == (None, "HEADER", "Message-ID", "<x@y>", "KEYWORD", "$AI_question")
+
+
+def test_message_exists_with_keyword(monkeypatch) -> None:
+    mailbox = make_mailbox()
+    connection = FakeFlakyConnection(search_uids=b"91")
+
+    monkeypatch.setattr("mail_ai_agent.imap_client.imaplib.IMAP4_SSL", lambda *_, **__: connection)
+    monkeypatch.setattr("mail_ai_agent.imap_client.time.sleep", lambda _: None)
+
+    with IMAPClient(mailbox) as client:
+        exists = client.message_exists_with_keyword("INBOX", "$AI/question")
+
+    assert exists is True
+    assert connection.search_args == (None, "KEYWORD", "$AI_question")
+
+
 def test_validate_runtime_setup_requires_uidplus_or_explicit_override(monkeypatch) -> None:
     mailbox = make_mailbox()
     connection = FakeFlakyConnection()

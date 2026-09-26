@@ -22,6 +22,8 @@ class ActionTaken(StrEnum):
     ROUTE_REPLY = "route_reply"
     ROUTE_UNCERTAIN = "route_uncertain"
     ROUTE_FROM_LLM = "route_from_llm"
+    ROUTE_FROM_PRIOR = "route_from_prior"
+    ROUTE_UNCERTAIN_EXPLORATION = "route_uncertain_exploration"
     ROUTE_ARCHIVE = "route_archive"
     ROUTE_NEEDS_REPLY = "route_needs_reply"
     SKIP_AI = "skip_ai"
@@ -79,6 +81,7 @@ class ActionTaken(StrEnum):
     # Admin actions
     ADMIN_REQUEUE_UNCERTAIN = "admin_requeue_uncertain"
     ADMIN_DELETE_MESSAGE = "admin_delete_message"
+    AUTO_CLOSE_UNCERTAIN_EXPLORATION = "auto_close_uncertain_exploration"
 
     # System actions
     WORKER_LOCK_DENIED = "worker_lock_denied"

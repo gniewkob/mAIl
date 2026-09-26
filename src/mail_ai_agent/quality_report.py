@@ -123,6 +123,46 @@ def build_quality_payload(audit_path: Path, *, window_days: int | None = None) -
     return _get_cached_quality_payload(audit_path)
 
 
+def build_quality_payload_between(
+    audit_path: Path,
+    *,
+    start_days_ago: int,
+    end_days_ago: int,
+) -> dict[str, Any]:
+    if start_days_ago <= end_days_ago:
+        raise ValueError("start_days_ago must be greater than end_days_ago")
+    if not audit_path.exists():
+        return _QualityAccumulator(inode=0).to_payload()
+
+    now = datetime.now(timezone.utc)
+    older_cutoff = now - timedelta(days=start_days_ago)
+    newer_cutoff = now - timedelta(days=end_days_ago)
+    accumulator = _QualityAccumulator(inode=0)
+    with audit_path.open("r", encoding="utf-8") as handle:
+        for line in handle:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                record = json.loads(line)
+            except Exception:
+                continue
+            if not isinstance(record, dict):
+                continue
+            raw = record.get("timestamp")
+            if raw is None:
+                continue
+            try:
+                ts = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+            except ValueError:
+                continue
+            if ts.tzinfo is None:
+                ts = ts.replace(tzinfo=timezone.utc)
+            if older_cutoff <= ts < newer_cutoff:
+                accumulator.apply_record(record)
+    return accumulator.to_payload()
+
+
 def _get_cached_quality_payload(audit_path: Path) -> dict[str, Any]:
     key = str(audit_path.resolve())
     if not audit_path.exists():

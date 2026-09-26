@@ -24,6 +24,7 @@ class ParsedEmail(BaseModel):
     plain_text_body: str = ""
     html_body: str | None = None
     normalized_body: str = ""
+    headers: dict[str, str] = Field(default_factory=dict)
     attachment_metadata: list[AttachmentMeta] = Field(default_factory=list)
 
     @property

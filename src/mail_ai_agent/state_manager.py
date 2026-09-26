@@ -485,6 +485,22 @@ class StateManager:
                 ).fetchall()
         return [self._row_to_record(row) for row in rows]
 
+    def count_by_status(self, *, status: WorkflowStatus, mailbox_id: str | None = None) -> int:
+        with self._managed_connection() as conn:
+            if mailbox_id is None:
+                row = conn.execute(
+                    "SELECT COUNT(*) AS count FROM email_processing_state WHERE status = ?",
+                    (status.value,),
+                ).fetchone()
+            else:
+                row = conn.execute(
+                    "SELECT COUNT(*) AS count FROM email_processing_state WHERE status = ? AND mailbox_id = ?",
+                    (status.value, mailbox_id),
+                ).fetchone()
+        if row is None:
+            return 0
+        return int(row["count"])
+
     def delete_record(self, record_id: int) -> None:
         with self._managed_connection() as conn:
             conn.execute("DELETE FROM email_processing_state WHERE id = ?", (record_id,))
