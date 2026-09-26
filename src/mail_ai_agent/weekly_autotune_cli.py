@@ -12,7 +12,7 @@ from typing import Any, Literal
 from .config import Settings
 from .quality_learning_cli import build_quality_learning_payload
 from .sieve_deploy_cli import deploy_all
-from .sieve_unify_cli import DEFAULT_POLICY, SievePolicy, _render
+from .sieve_unify_cli import DEFAULT_POLICY, SievePolicy, _render, trusted_domains_from
 
 
 _IF_BLOCK_RE = re.compile(r"if\s+anyof\s*\((?P<cond>.*?)\)\s*\{(?P<body>.*?)\}", re.IGNORECASE | re.DOTALL)
@@ -374,7 +374,10 @@ def run_weekly_autotune(
     generated_sieve_dir.mkdir(parents=True, exist_ok=True)
     generated_files: list[str] = []
     for mailbox in settings.load_mailboxes():
-        content = _render(mailbox, merged)
+        content = _render(
+            mailbox, merged, mailbox.routing_strategy or settings.routing_strategy,
+            trusted_domains_from(settings.automated_sender_keep),
+        )
         path = generated_sieve_dir / f"{mailbox.mailbox_id}.main.sieve"
         path.write_text(content, encoding="utf-8")
         generated_files.append(str(path))

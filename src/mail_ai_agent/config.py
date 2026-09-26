@@ -86,6 +86,10 @@ class MailboxConfig(BaseModel):
     imap_system_folder: str = "INBOX.System"
 
     billing_payment_email: str | None = None
+    # Per-mailbox override of the global ROUTING_STRATEGY (None = inherit).
+    routing_strategy: Literal["move", "tag_only", "copy_plus_tag", "hybrid"] | None = None
+    # Trusted automated senders (copied from AUTOMATED_SENDER_KEEP): never spam, may stay in INBOX.
+    automated_sender_keep: str = ""
 
     @field_validator("imap_search_criterion")
     @classmethod
@@ -120,6 +124,7 @@ class MailboxConfig(BaseModel):
             imap_billing_folder=settings.imap_billing_folder,
             imap_system_folder=settings.imap_system_folder,
             billing_payment_email=settings.imap_billing_payment_email,
+            automated_sender_keep=settings.automated_sender_keep,
         )
 
 
@@ -165,7 +170,13 @@ class Settings(BaseSettings):
 
     move_confidence_threshold: float = Field(default=0.75, alias="MOVE_CONFIDENCE_THRESHOLD")
     other_move_confidence_threshold: float = Field(default=0.50, alias="OTHER_MOVE_CONFIDENCE_THRESHOLD")
-    routing_strategy: Literal["move", "tag_only", "copy_plus_tag"] = Field(default="move", alias="ROUTING_STRATEGY")
+    routing_strategy: Literal["move", "tag_only", "copy_plus_tag", "hybrid"] = Field(default="move", alias="ROUTING_STRATEGY")
+    # hybrid: these categories are MOVED to their folder (single copy); all others stay in INBOX, tagged only.
+    # Sender substrings (e.g. "versum,booksy") whose automated mail may stay a human category in INBOX.
+    automated_sender_keep: str = Field(default="", alias="AUTOMATED_SENDER_KEEP")
+    hybrid_move_categories: str = Field(
+        default="newsletter,offer,spam,system,billing", alias="HYBRID_MOVE_CATEGORIES"
+    )
     imap_tag_prefix: str = Field(default="$AI_", alias="IMAP_TAG_PREFIX")
     flag_confidence_threshold: float = Field(default=0.80, alias="FLAG_CONFIDENCE_THRESHOLD")
     draft_confidence_threshold: float = Field(default=0.85, alias="DRAFT_CONFIDENCE_THRESHOLD")
@@ -291,6 +302,8 @@ class Settings(BaseSettings):
             "imap_billing_folder": _get("imap_billing_folder", self.imap_billing_folder),
             "imap_system_folder": _get("imap_system_folder", self.imap_system_folder),
             "billing_payment_email": _get("billing_payment_email", self.imap_billing_payment_email),
+            "routing_strategy": raw_mailbox.get("routing_strategy"),
+            "automated_sender_keep": _get("automated_sender_keep", self.automated_sender_keep),
         }
         if not merged["imap_host"]:
             raise ValueError(f"Mailbox '{merged['mailbox_id']}' has no IMAP host configured.")

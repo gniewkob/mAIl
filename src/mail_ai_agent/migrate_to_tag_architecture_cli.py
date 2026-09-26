@@ -25,16 +25,20 @@ class FolderMigrationStats:
     missing_tag: int = 0
     tagged_existing: int = 0
     tag_already_present: int = 0
+    guard_blocked: int = 0
     errors: int = 0
     mailbox_error: str | None = None
 
 
 def _category_folders(mailbox: MailboxConfig) -> list[tuple[str, str]]:
+    # The spam folder (Junk) is deliberately NOT a sync target. It is owned by the user,
+    # the mail client's spam filter (e.g. SpamSieve) and the server-side filter, and holds
+    # mail that was never meant to be in INBOX. Syncing it made `repair` copy every spam
+    # message back into INBOX and would make `prune` wipe the spam-training corpus.
     return [
         (mailbox.imap_appointments_folder, "appointment"),
         (mailbox.imap_questions_folder, "question"),
         (mailbox.imap_complaints_folder, "complaint"),
-        (mailbox.imap_spam_folder, "spam"),
         (mailbox.imap_newsletter_folder, "newsletter"),
         (mailbox.imap_offer_folder, "offer"),
         (mailbox.imap_other_folder, "other"),
@@ -42,6 +46,18 @@ def _category_folders(mailbox: MailboxConfig) -> list[tuple[str, str]]:
         (mailbox.imap_system_folder, "system"),
         (mailbox.imap_uncertain_folder, "uncertain"),
     ]
+
+
+# Prune safety: never let a transient IMAP glitch (e.g. an empty INBOX listing) wipe category folders.
+PRUNE_MAX_PER_FOLDER = 300
+PRUNE_MAX_RATIO = 0.5
+PRUNE_RATIO_MIN_FOLDER_SIZE = 50
+
+
+def _prune_blocked(missing: int, folder_size: int, max_per_folder: int, max_ratio: float) -> bool:
+    if missing > max_per_folder:
+        return True
+    return folder_size >= PRUNE_RATIO_MIN_FOLDER_SIZE and missing / folder_size > max_ratio
 
 
 def _keyword(prefix: str, category: str) -> str:
@@ -63,6 +79,8 @@ def migrate_mailbox(
     limit_per_folder: int,
     tag_prefix: str,
     missing_policy: str,
+    max_prune_per_folder: int = PRUNE_MAX_PER_FOLDER,
+    max_prune_ratio: float = PRUNE_MAX_RATIO,
 ) -> list[FolderMigrationStats]:
     stats: list[FolderMigrationStats] = []
     try:
@@ -77,8 +95,12 @@ def migrate_mailbox(
                     if not source_message_id:
                         continue
                     source_index.setdefault(source_message_id, []).append(source_uid)
+            if apply and missing_policy == "delete" and not source_index:
+                raise RuntimeError(
+                    f"prune guard: source folder {mailbox.imap_source_folder} returned no messages; refusing to prune"
+                )
             for folder, category in _category_folders(mailbox):
-                if folder == mailbox.imap_source_folder:
+                if folder in (mailbox.imap_source_folder, mailbox.imap_spam_folder):
                     continue
                 keyword = _keyword(tag_prefix, category)
                 s = FolderMigrationStats(mailbox_id=mailbox.mailbox_id, source_folder=folder, keyword=keyword)
@@ -87,6 +109,17 @@ def migrate_mailbox(
                 if limit_per_folder > 0:
                     uids = uids[-limit_per_folder:]
                 folder_msgids = imap.fetch_message_id_headers(folder, uids) if dedupe_by_message_id else {}
+                folder_apply = apply
+                if apply and missing_policy == "delete":
+                    would_prune = sum(
+                        1 for uid in uids if folder_msgids.get(uid) and folder_msgids.get(uid) not in source_index
+                    )
+                    if _prune_blocked(would_prune, len(uids), max_prune_per_folder, max_prune_ratio):
+                        folder_apply = False
+                        s.guard_blocked = would_prune
+                        s.mailbox_error = (
+                            f"prune guard: {would_prune}/{len(uids)} messages would be deleted; skipped (report only)"
+                        )
                 for uid in uids:
                     s.scanned += 1
                     try:
@@ -99,7 +132,7 @@ def migrate_mailbox(
                                 s.tag_already_present += 1
                                 continue
                             s.missing_in_source += 1
-                            if apply:
+                            if folder_apply:
                                 if missing_policy == "delete":
                                     imap.delete_message(folder, uid)
                                     s.pruned += 1
@@ -121,14 +154,14 @@ def migrate_mailbox(
                                 s.tag_already_present += 1
                             else:
                                 s.missing_tag += 1
-                                if apply:
+                                if folder_apply:
                                     for source_uid in existing_source_uids:
                                         imap.add_keyword(mailbox.imap_source_folder, source_uid, keyword)
                                         source_keywords.setdefault(source_uid, set()).add(keyword)
                                         s.tagged_existing += 1
                             continue
                         s.missing_in_source += 1
-                        if apply:
+                        if folder_apply:
                             if missing_policy == "delete":
                                 imap.delete_message(folder, uid)
                                 s.pruned += 1
@@ -175,9 +208,17 @@ def main() -> None:
     parser.add_argument(
         "--missing-policy",
         choices=("copy", "delete", "report"),
-        default="copy",
-        help="How to handle messages present only in category folders: copy to source, delete copy, or report-only.",
+        default="report",
+        help=(
+            "How to handle messages present only in category folders: copy to source, delete copy, or report-only. "
+            "WARNING: 'copy' treats INBOX as incomplete and resurrects mail the user deleted or moved to spam; "
+            "use it only for a one-off migration, never on a schedule."
+        ),
     )
+    parser.add_argument("--max-prune-per-folder", type=int, default=PRUNE_MAX_PER_FOLDER,
+                        help="Prune guard: skip a folder if more than N copies would be deleted.")
+    parser.add_argument("--max-prune-ratio", type=float, default=PRUNE_MAX_RATIO,
+                        help="Prune guard: skip a folder (>=50 msgs) if more than this share would be deleted.")
     parser.add_argument("--tag-prefix", default="$AI_", help="Tag prefix used during migration.")
     parser.add_argument("--mailbox-id", action="append", default=[], help="Process only selected mailbox id(s).")
     parser.add_argument("--skip-mailbox-id", action="append", default=[], help="Mailbox ID to skip (can be repeated).")
@@ -197,6 +238,19 @@ def main() -> None:
         if not selected_mailboxes:
             raise SystemExit(f"No mailboxes matched --mailbox-id selection: {sorted(include_ids)}")
     for mailbox in selected_mailboxes:
+        effective_strategy = mailbox.routing_strategy or settings.routing_strategy
+        if missing_policy != "report" and effective_strategy != "copy_plus_tag":
+            # INBOX<->category sync only makes sense when category folders hold COPIES of INBOX mail.
+            # With move/hybrid a category folder is the message's only home: pruning would delete it.
+            all_stats.append(
+                FolderMigrationStats(
+                    mailbox_id=mailbox.mailbox_id,
+                    source_folder="__mailbox__",
+                    keyword="",
+                    mailbox_error=f"skipped: routing strategy '{effective_strategy}' keeps a single copy",
+                )
+            )
+            continue
         if mailbox.mailbox_id in skip_ids:
             all_stats.append(
                 FolderMigrationStats(
@@ -215,6 +269,8 @@ def main() -> None:
                 limit_per_folder=max(0, args.limit_per_folder),
                 tag_prefix=args.tag_prefix,
                 missing_policy=missing_policy,
+                max_prune_per_folder=max(0, args.max_prune_per_folder),
+                max_prune_ratio=args.max_prune_ratio,
             )
         )
 
@@ -234,6 +290,7 @@ def main() -> None:
             "missing_tag": sum(item.missing_tag for item in all_stats),
             "tagged_existing": sum(item.tagged_existing for item in all_stats),
             "tag_already_present": sum(item.tag_already_present for item in all_stats),
+            "guard_blocked": sum(item.guard_blocked for item in all_stats),
             "errors": sum(item.errors for item in all_stats),
         },
     }

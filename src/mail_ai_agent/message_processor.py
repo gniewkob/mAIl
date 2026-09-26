@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 
 from .circuit_breaker import CircuitBreakerOpenError
 from .decision_engine import decide_from_llm, decide_from_rule
+from .automated_sender import apply_automated_sender_guard
 from .email_parser import compute_content_fingerprint, compute_message_fingerprint, parse_email
 from .folder_mapper import category_to_folder
 from .rule_engine import evaluate_rules
@@ -366,12 +367,12 @@ class MessageProcessor:
             raise RuntimeError("Lease acquired but record is None in quarantine")
         
         try:
-            target_uid = imap.copy_message(
+            target_uid = None if self._strategy(mailbox) == "hybrid" else imap.copy_message(
                 mailbox.imap_source_folder,
                 candidate.uid,
                 mailbox.imap_uncertain_folder,
             )
-            if self.settings.routing_strategy == "move":
+            if self._strategy(mailbox) == "move":
                 try:
                     imap.delete_message(mailbox.imap_source_folder, candidate.uid)
                 except Exception as cleanup_exc:
@@ -474,7 +475,7 @@ class MessageProcessor:
         
         cleaned = False
         # Source cleanup is only valid for destructive move-based routing.
-        if self.settings.routing_strategy == "move":
+        if self._strategy(mailbox) == "move":
             cleaned = self.cleanup_handler.try_cleanup_already_processed(
                 candidate, mailbox, imap, lease,
                 parsed.message_id, fingerprint, content_fingerprint, sender, subject
@@ -563,6 +564,9 @@ class MessageProcessor:
             else:
                 # Call LLM for classification
                 classification, latency_ms = self.llm.classify(parsed)
+                classification = apply_automated_sender_guard(
+                    classification, parsed, self.settings.automated_sender_keep
+                )
                 decision = decide_from_llm(classification, self.settings, mailbox)
         else:
             decision = decide_from_rule(rule)
@@ -615,7 +619,9 @@ class MessageProcessor:
         started = perf_counter()
         
         try:
-            strategy = self.settings.routing_strategy
+            strategy = self._strategy(mailbox)
+            if strategy == "hybrid":
+                strategy = "move" if self._hybrid_moves(decision) else "tag_only"
             source_folder = mailbox.imap_source_folder
             # Set flags if needed
             if decision.flags:
@@ -721,6 +727,17 @@ class MessageProcessor:
                 latency_ms=duration_ms,
                 error=str(exc),
             )
+
+    def _strategy(self, mailbox: MailboxConfig) -> str:
+        """Effective routing strategy: per-mailbox override, else the global setting."""
+        return mailbox.routing_strategy or self.settings.routing_strategy
+
+    def _hybrid_moves(self, decision: "FinalDecision") -> bool:
+        """hybrid: move only confident noise categories; everything else stays in INBOX, tagged."""
+        if decision.final_status == WorkflowStatus.UNCERTAIN:
+            return False
+        moving = {c.strip().lower() for c in self.settings.hybrid_move_categories.split(",") if c.strip()}
+        return (decision.category or "").strip().lower() in moving
 
     def _keyword_for_decision(self, category: str | None) -> str:
         category_part = (category or "uncategorized").strip().lower()
@@ -875,15 +892,15 @@ class MessageProcessor:
         
         if not self.settings.dry_run:
             try:
-                target_uid = imap.copy_message(
+                target_uid = None if self._strategy(mailbox) == "hybrid" else imap.copy_message(
                     mailbox.imap_source_folder,
                     candidate.uid,
                     mailbox.imap_uncertain_folder,
                 )
-                if self.settings.routing_strategy == "move":
+                if self._strategy(mailbox) == "move":
                     imap.delete_message(mailbox.imap_source_folder, candidate.uid)
             except Exception as cleanup_exc:
-                if self.settings.routing_strategy == "move":
+                if self._strategy(mailbox) == "move":
                     LOGGER.exception("LLM circuit breaker fallback cleanup failed")
                     self.state.mark_move_cleanup_pending(
                         record.id,
@@ -950,15 +967,15 @@ class MessageProcessor:
         
         if not self.settings.dry_run:
             try:
-                target_uid = imap.copy_message(
+                target_uid = None if self._strategy(mailbox) == "hybrid" else imap.copy_message(
                     mailbox.imap_source_folder,
                     candidate.uid,
                     mailbox.imap_uncertain_folder,
                 )
-                if self.settings.routing_strategy == "move":
+                if self._strategy(mailbox) == "move":
                     imap.delete_message(mailbox.imap_source_folder, candidate.uid)
             except Exception as cleanup_exc:
-                if self.settings.routing_strategy == "move":
+                if self._strategy(mailbox) == "move":
                     LOGGER.exception("LLM failure fallback cleanup failed")
                     self.state.mark_move_cleanup_pending(
                         record.id,

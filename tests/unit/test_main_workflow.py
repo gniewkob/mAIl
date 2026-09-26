@@ -1044,3 +1044,69 @@ def test_process_inbox_cleans_source_message_for_processed_message_id_mismatch(m
     audit_lines = [json.loads(line) for line in (tmp_path / "audit.jsonl").read_text(encoding="utf-8").splitlines()]
     assert audit_lines[-1]["action_taken"] == "cleanup_source_conflict_duplicate"
 
+
+
+# --- hybrid routing (2026-09-26): one copy per message, no INBOX/category duplicates -------------
+
+
+class FakeNewsletterLLMGateway(FakeLLMGateway):
+    def classify(self, parsed_email: ParsedEmail) -> tuple[LLMClassification, int]:
+        payload, latency = super().classify(parsed_email)
+        return payload.model_copy(update={"category": "newsletter", "requires_reply": False, "draft_reply": None}), latency
+
+
+def test_hybrid_moves_noise_category_without_leaving_inbox_copy(monkeypatch, tmp_path: Path) -> None:
+    from mail_ai_agent.main import process_inbox
+
+    monkeypatch.setattr("mail_ai_agent.main.IMAPClient", FakeIMAPClient)
+    monkeypatch.setattr("mail_ai_agent.main.LLMGateway", FakeNewsletterLLMGateway)
+    settings = make_settings(tmp_path).model_copy(update={"dry_run": False, "routing_strategy": "hybrid"})
+
+    report = process_inbox(settings)
+
+    assert report.processed == 1
+    assert FakeIMAPClient.copied == [("INBOX.AI-Review", "42", "INBOX.Newsletter")]
+    assert FakeIMAPClient.deleted == [("INBOX.AI-Review", "42")]
+
+
+def test_hybrid_keeps_human_mail_in_inbox_tag_only(monkeypatch, tmp_path: Path) -> None:
+    from mail_ai_agent.main import process_inbox
+
+    monkeypatch.setattr("mail_ai_agent.main.IMAPClient", FakeIMAPClient)
+    monkeypatch.setattr("mail_ai_agent.main.LLMGateway", FakeLLMGateway)  # category=question
+    settings = make_settings(tmp_path).model_copy(
+        update={"dry_run": False, "routing_strategy": "hybrid", "imap_tag_prefix": "$AI_"}
+    )
+
+    report = process_inbox(settings)
+
+    assert report.processed == 1
+    assert FakeIMAPClient.copied == []
+    assert FakeIMAPClient.deleted == []
+    assert FakeIMAPClient.keywords == [("INBOX.AI-Review", "42", "$AI_question")]
+
+
+def test_hybrid_llm_failure_leaves_message_untouched(monkeypatch, tmp_path: Path) -> None:
+    from mail_ai_agent.main import process_inbox
+
+    FakeIMAPClient.copied = []
+    FakeIMAPClient.deleted = []
+    monkeypatch.setattr("mail_ai_agent.main.IMAPClient", FakeIMAPClient)
+    monkeypatch.setattr("mail_ai_agent.main.LLMGateway", FakeFailingLLMGateway)
+    settings = make_settings(tmp_path).model_copy(update={"dry_run": False, "routing_strategy": "hybrid"})
+
+    report = process_inbox(settings)
+
+    assert report.uncertain == 1
+    assert FakeIMAPClient.copied == []  # no duplicate in AI-Uncertain
+    assert FakeIMAPClient.deleted == []
+
+
+def test_mailbox_manifest_can_override_routing_strategy(tmp_path: Path) -> None:
+    settings = make_settings(tmp_path)
+    box = settings._normalize_mailbox(
+        {"mailbox_id": "pilot", "imap_user": "p@example.com", "imap_pass": "x", "routing_strategy": "hybrid"}
+    )
+    assert box.routing_strategy == "hybrid"
+    inherit = settings._normalize_mailbox({"mailbox_id": "other", "imap_user": "o@example.com", "imap_pass": "x"})
+    assert inherit.routing_strategy is None

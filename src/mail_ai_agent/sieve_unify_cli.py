@@ -75,7 +75,70 @@ def _sieve_list(values: tuple[str, ...]) -> str:
     return "[{}]".format(", ".join(quoted))
 
 
-def _render(mailbox: MailboxConfig, policy: SievePolicy) -> str:
+SINGLE_COPY_STRATEGIES = {"hybrid", "move"}
+
+
+def _trusted_block(trusted_domains: tuple[str, ...], default_action: str) -> str:
+    if not trusted_domains:
+        return ""
+    return f"""# 0) Trusted senders (e.g. booking system) always reach the worker, even if the server
+#    spam filter scores them as spam (Booksy booking notifications score ~6.5 > 5.0).
+if address :domain :is "from" {_sieve_list(trusted_domains)} {{
+    {default_action}
+    stop;
+}}
+
+"""
+
+
+def _render_spam_gate(
+    mailbox: MailboxConfig,
+    policy: SievePolicy,
+    spam_headers: str,
+    default_action: str,
+    trusted_domains: tuple[str, ...] = (),
+) -> str:
+    """Single-copy mailboxes: the server only diverts hard spam; mAIl classifies everything else.
+
+    No `:copy` anywhere: a message lives in exactly one folder, so deleting it or moving it to Junk
+    on any device is final. Keyword pre-filters (billing/system/newsletter) are deliberately NOT
+    applied server-side: their substring matches ("ing", "log", "plus") are too loose to move mail
+    out of INBOX unchecked; mAIl's rule engine + LLM does that with confidence thresholds.
+    """
+    return f"""require ["fileinto", "mailbox"];
+
+# Unified Sieve policy for mAIl (generated) - single-copy mode ({mailbox.routing_strategy}).
+# Server diverts only hard spam; mAIl classifies and files everything else (one copy per message).
+
+{_trusted_block(trusted_domains, default_action)}# 1) Hard spam from server anti-spam headers -> Junk (moved, not copied)
+if anyof (
+    {spam_headers}
+) {{
+    fileinto "{mailbox.imap_spam_folder}";
+    stop;
+}}
+
+# 2) Default: one shared worker entrypoint
+{default_action}
+"""
+
+
+def trusted_domains_from(keep_senders: str) -> tuple[str, ...]:
+    """'booksy, versum.pl' -> ('booksy.com', 'versum.pl'): bare names get '.com' only if no dot."""
+    out = []
+    for item in (keep_senders or "").split(","):
+        item = item.strip().lower().lstrip("@")
+        if item:
+            out.append(item if "." in item else f"{item}.com")
+    return tuple(out)
+
+
+def _render(
+    mailbox: MailboxConfig,
+    policy: SievePolicy,
+    strategy: str | None = None,
+    trusted_domains: tuple[str, ...] = (),
+) -> str:
     spam_headers = " or ".join(
         f'header :contains "{header}" {_sieve_list(policy.spam_levels)}' for header in policy.spam_headers
     )
@@ -84,6 +147,8 @@ def _render(mailbox: MailboxConfig, policy: SievePolicy) -> str:
         default_action = "keep;"
     else:
         default_action = f'fileinto "{source_folder}";'
+    if (strategy or mailbox.routing_strategy) in SINGLE_COPY_STRATEGIES:
+        return _render_spam_gate(mailbox, policy, spam_headers, default_action, trusted_domains)
     return f"""require ["fileinto", "mailbox", "copy", "variables", "envelope", "imap4flags"];
 
 # Unified Sieve policy for mAIl (generated).
@@ -175,7 +240,10 @@ def main() -> None:
 
     summary: list[dict[str, str]] = []
     for mailbox in settings.load_mailboxes():
-        script = _render(mailbox, policy)
+        script = _render(
+            mailbox, policy, mailbox.routing_strategy or settings.routing_strategy,
+            trusted_domains_from(settings.automated_sender_keep),
+        )
         output_path = output_dir / f"{mailbox.mailbox_id}.main.sieve"
         output_path.write_text(script, encoding="utf-8")
         summary.append(

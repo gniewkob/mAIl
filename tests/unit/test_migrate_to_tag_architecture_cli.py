@@ -140,3 +140,96 @@ def test_migrate_mailbox_delete_policy_prunes_orphans(monkeypatch) -> None:
     total_copied = sum(s.copied for s in stats)
     assert total_pruned == 2
     assert total_copied == 0
+
+
+
+# --- Regression tests (2026-09-26): deleted / spam mail resurrected into INBOX -------------------
+
+
+def _spam_mailbox() -> MailboxConfig:
+    return MailboxConfig.model_validate(
+        {
+            "mailbox_id": "m1",
+            "imap_host": "imap.example.com",
+            "imap_user": "u@example.com",
+            "imap_pass": "secret",
+            "imap_source_folder": "INBOX",
+            "imap_spam_folder": "Junk",
+            "imap_offer_folder": "INBOX.Offer",
+        }
+    )
+
+
+def _patched(monkeypatch, uids: dict[str, list[str]], msgid: dict[str, str]) -> list[FakeIMAPClient]:
+    import mail_ai_agent.migrate_to_tag_architecture_cli as m
+
+    instances: list[FakeIMAPClient] = []
+
+    def _factory(mailbox: MailboxConfig) -> FakeIMAPClient:
+        client = FakeIMAPClient(mailbox)
+        client._uids = uids
+        client._msgid = msgid
+        instances.append(client)
+        return client
+
+    monkeypatch.setattr(m, "IMAPClient", _factory)
+    return instances
+
+
+def test_repair_never_copies_spam_folder_back_to_inbox(monkeypatch) -> None:
+    inst = _patched(
+        monkeypatch,
+        {"INBOX": ["200"], "Junk": ["7", "8"], "INBOX.Offer": []},
+        {"200": "<keep@x>", "7": "<spam1@x>", "8": "<spam2@x>"},
+    )
+    stats = migrate_mailbox(mailbox=_spam_mailbox(), apply=True, dedupe_by_message_id=True,
+                            limit_per_folder=0, tag_prefix="$AI_", missing_policy="copy")
+    assert inst[0].copied == []
+    assert all(s.source_folder != "Junk" for s in stats)
+
+
+def test_prune_never_deletes_from_spam_folder(monkeypatch) -> None:
+    inst = _patched(
+        monkeypatch,
+        {"INBOX": ["200"], "Junk": ["7", "8"], "INBOX.Offer": []},
+        {"200": "<keep@x>", "7": "<spam1@x>", "8": "<spam2@x>"},
+    )
+    migrate_mailbox(mailbox=_spam_mailbox(), apply=True, dedupe_by_message_id=True,
+                    limit_per_folder=0, tag_prefix="$AI_", missing_policy="delete")
+    assert inst[0].deleted == []
+
+
+def test_prune_refuses_when_inbox_listing_is_empty(monkeypatch) -> None:
+    inst = _patched(
+        monkeypatch,
+        {"INBOX": [], "INBOX.Offer": ["1", "2", "3"]},
+        {"1": "<a@x>", "2": "<b@x>", "3": "<c@x>"},
+    )
+    stats = migrate_mailbox(mailbox=_spam_mailbox(), apply=True, dedupe_by_message_id=True,
+                            limit_per_folder=0, tag_prefix="$AI_", missing_policy="delete")
+    assert inst[0].deleted == []
+    assert any(s.mailbox_error and "prune guard" in s.mailbox_error for s in stats)
+
+
+def test_prune_guard_blocks_mass_deletion(monkeypatch) -> None:
+    offer = [str(i) for i in range(1, 101)]
+    msgid = {uid: f"<m{uid}@x>" for uid in offer}
+    msgid["200"] = "<m1@x>"  # only one offer copy still present in INBOX
+    inst = _patched(monkeypatch, {"INBOX": ["200"], "INBOX.Offer": offer}, msgid)
+    stats = migrate_mailbox(mailbox=_spam_mailbox(), apply=True, dedupe_by_message_id=True,
+                            limit_per_folder=0, tag_prefix="$AI_", missing_policy="delete")
+    assert inst[0].deleted == []
+    offer_stats = [s for s in stats if s.source_folder == "INBOX.Offer"][0]
+    assert offer_stats.guard_blocked == 99
+    assert offer_stats.missing_in_source == 99
+
+
+def test_prune_within_guard_still_deletes_orphans(monkeypatch) -> None:
+    offer = [str(i) for i in range(1, 101)]
+    msgid = {uid: f"<m{uid}@x>" for uid in offer}
+    inbox = [f"s{i}" for i in range(1, 91)]
+    msgid.update({f"s{i}": f"<m{i}@x>" for i in range(1, 91)})  # 10 of 100 orphaned
+    inst = _patched(monkeypatch, {"INBOX": inbox, "INBOX.Offer": offer}, msgid)
+    migrate_mailbox(mailbox=_spam_mailbox(), apply=True, dedupe_by_message_id=True,
+                    limit_per_folder=0, tag_prefix="$AI_", missing_policy="delete")
+    assert len(inst[0].deleted) == 10

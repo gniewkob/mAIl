@@ -52,3 +52,35 @@ def test_render_logic_is_uniform_across_mailboxes_except_folder_values() -> None
     assert "# Unified Sieve policy for mAIl (generated)." in script_b
     assert "INBOX.Team-AI-Review" in script_b
     assert "INBOX.Team-AI-Review" not in script_a
+
+
+# --- single-copy (hybrid/move) mailboxes: server is a spam gate only (2026-09-26) ---------------
+
+
+def test_render_hybrid_is_spam_gate_without_copy() -> None:
+    script = _render(_mailbox(imap_source_folder="INBOX", routing_strategy="hybrid"), DEFAULT_POLICY)
+    assert ":copy" not in script
+    assert 'fileinto "Junk";' in script
+    assert "INBOX.Billing" not in script
+    assert "INBOX.System" not in script
+    assert "INBOX.Newsletter" not in script
+    assert script.rstrip().endswith("keep;")
+
+
+def test_render_explicit_strategy_overrides_mailbox_default() -> None:
+    script = _render(_mailbox(imap_source_folder="INBOX"), DEFAULT_POLICY, "hybrid")
+    assert ":copy" not in script
+
+
+def test_render_copy_plus_tag_keeps_legacy_prefilter() -> None:
+    script = _render(_mailbox(imap_source_folder="INBOX", routing_strategy="copy_plus_tag"), DEFAULT_POLICY)
+    assert 'fileinto :copy "INBOX.Billing";' in script
+
+
+def test_trusted_domains_bypass_spam_gate_first() -> None:
+    from mail_ai_agent.sieve_unify_cli import trusted_domains_from
+    domains = trusted_domains_from("booksy, versum.pl")
+    assert domains == ("booksy.com", "versum.pl")
+    script = _render(_mailbox(imap_source_folder="INBOX", routing_strategy="hybrid"), DEFAULT_POLICY, None, domains)
+    assert script.index('"booksy.com"') < script.index('fileinto "Junk"')
+    assert ":copy" not in script

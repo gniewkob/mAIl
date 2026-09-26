@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING
 from ..circuit_breaker import CircuitBreakerOpenError
 from ..constants import ActionTaken, WorkflowStatus
 from ..decision_engine import decide_from_llm, decide_from_rule
+from ..automated_sender import apply_automated_sender_guard
 from ..email_parser import compute_content_fingerprint, compute_message_fingerprint, parse_email
 from ..rule_engine import evaluate_rules
 from ..folder_mapper import category_to_folder
@@ -162,7 +163,9 @@ class ClassifyStage:
         # Call LLM (supports both legacy classify(parsed) and newer classify(parsed, mailbox))
         classification, latency_ms = self._invoke_llm(context)
         context.llm_latency_ms = latency_ms
-        
+        classification = apply_automated_sender_guard(
+            classification, context.parsed, self.settings.automated_sender_keep
+        )
         return decide_from_llm(classification, self.settings, context.mailbox)
 
     def _invoke_llm(self, context: ProcessingContext):

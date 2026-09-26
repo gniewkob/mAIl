@@ -96,6 +96,17 @@ def evaluate_rules(parsed_email: ParsedEmail, mailbox: MailboxConfig) -> RuleDec
     message_id = (parsed_email.message_id or "").lower()
     combined = " ".join([subject, sender, body, message_id])
     spamsieve_spam = _is_spamsieve_spam(parsed_email)
+    trusted = _is_trusted_sender(parsed_email, mailbox)
+
+    if trusted:
+        # e.g. Booksy booking notifications: the server's SpamAssassin scores them ~6.5 (spam).
+        # Never let a spam header or keyword rule divert them; the LLM + guard decide.
+        return RuleDecision(
+            category="unknown",
+            target_folder=mailbox.imap_source_folder,
+            action="needs_llm",
+            reason="trusted sender (AUTOMATED_SENDER_KEEP)",
+        )
 
     if spamsieve_spam:
         return RuleDecision(
@@ -185,6 +196,21 @@ def evaluate_rules(parsed_email: ParsedEmail, mailbox: MailboxConfig) -> RuleDec
         action="needs_llm",
         reason="no deterministic rule matched",
     )
+
+
+def _is_trusted_sender(parsed_email: ParsedEmail, mailbox: MailboxConfig) -> bool:
+    from email.utils import parseaddr
+
+    address = parseaddr(parsed_email.sender or "")[1].lower()
+    domain = address.rsplit("@", 1)[-1] if "@" in address else ""
+    for item in (getattr(mailbox, "automated_sender_keep", "") or "").split(","):
+        item = item.strip().lower().lstrip("@")
+        if not item or not domain:
+            continue
+        wanted = item if "." in item else f"{item}.com"
+        if domain == wanted or domain.endswith("." + wanted):
+            return True
+    return False
 
 
 def _is_spamsieve_spam(parsed_email: ParsedEmail) -> bool:
