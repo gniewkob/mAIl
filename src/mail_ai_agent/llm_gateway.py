@@ -101,6 +101,8 @@ class LLMGateway:
                             model=self.settings.ollama_model,
                             prompt=prompt,
                             temperature=self.settings.ollama_temperature,
+                            num_predict=self.settings.ollama_num_predict,
+                            think=self.settings.ollama_think,
                         ),
                         timeout=self.settings.ollama_timeout_seconds,
                     )
@@ -125,14 +127,22 @@ class LLMGateway:
             raise
 
 
-def _build_generate_payload(*, model: str, prompt: str, temperature: float) -> dict[str, Any]:
-    return {
+def _build_generate_payload(
+    *, model: str, prompt: str, temperature: float, num_predict: int = 2048, think: bool | None = None
+) -> dict[str, Any]:
+    # num_predict caps generation: on 2026-09-26 one qwen3 request ran away past 12k tokens
+    # (~15 min) and blocked every other Ollama call. A truncated answer fails JSON validation,
+    # is retried and ends up as uncertain (message stays in INBOX) instead of hanging the worker.
+    payload: dict[str, Any] = {
         "model": model,
         "prompt": prompt,
         "format": _classification_json_schema(),
         "stream": False,
-        "options": {"temperature": temperature},
+        "options": {"temperature": temperature, "num_predict": num_predict},
     }
+    if think is not None:
+        payload["think"] = think
+    return payload
 
 
 @lru_cache(maxsize=1)

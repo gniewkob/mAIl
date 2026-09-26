@@ -202,3 +202,11 @@ def test_prompt_template_distinguishes_spam_newsletter_and_offer() -> None:
     assert "offer" in PROMPT_TEMPLATE
     assert "unsubscribe" in PROMPT_TEMPLATE
     assert "SEO" in PROMPT_TEMPLATE
+
+
+def test_build_generate_payload_caps_generation_and_optional_think() -> None:
+    p = _build_generate_payload(model="qwen3:8b", prompt="x", temperature=0.1)
+    assert p["options"]["num_predict"] == 2048
+    assert "think" not in p
+    q = _build_generate_payload(model="qwen3:8b", prompt="x", temperature=0.1, num_predict=512, think=False)
+    assert q["options"]["num_predict"] == 512 and q["think"] is False

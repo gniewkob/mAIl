@@ -165,6 +165,9 @@ class Settings(BaseSettings):
     ollama_model: str = Field(default="qwen2.5:7b-instruct", alias="OLLAMA_MODEL")
     ollama_timeout_seconds: int = Field(default=60, alias="OLLAMA_TIMEOUT_SECONDS")
     ollama_temperature: float = Field(default=0.1, alias="OLLAMA_TEMPERATURE")
+    ollama_num_predict: int = Field(default=2048, alias="OLLAMA_NUM_PREDICT")
+    # None = model default (qwen3 thinks); False = no reasoning tokens (much faster). Decide via bench.
+    ollama_think: bool | None = Field(default=None, alias="OLLAMA_THINK")
     ollama_circuit_breaker_failures: int = Field(default=3, alias="OLLAMA_CIRCUIT_BREAKER_FAILURES")
     ollama_circuit_breaker_timeout_seconds: int = Field(default=300, alias="OLLAMA_CIRCUIT_BREAKER_TIMEOUT_SECONDS")
 
