@@ -236,3 +236,29 @@ def test_rule_engine_respects_spamsieve_spam_header_without_llm() -> None:
     decision = evaluate_rules(parsed, make_mailbox())
     assert decision.action == "skip_ai"
     assert decision.category == "spam"
+
+
+def test_bank_documents_are_billing() -> None:
+    from mail_ai_agent.config import MailboxConfig
+    from mail_ai_agent.rule_engine import evaluate_rules
+    from mail_ai_agent.schemas import ParsedEmail
+
+    mb = MailboxConfig.model_validate({"mailbox_id": "m", "imap_host": "h", "imap_user": "u@x.pl",
+                                       "imap_pass": "p", "imap_source_folder": "INBOX"})
+    for subject in ("mBank - elektroniczne zestawienie operacji za lipiec 2025",
+                    "Harmonogram spłat kredytu w mBanku", "Zmiana oprocentowania kredytów"):
+        d = evaluate_rules(ParsedEmail(sender="mBank <kontakt@mbank.pl>", subject=subject), mb)
+        assert d.category == "billing", subject
+    person = evaluate_rules(ParsedEmail(sender="Anna <a@gmail.com>", subject="Wizyta w piątek?"), mb)
+    assert person.category != "billing"
+
+
+def test_reply_to_bank_subject_is_not_billing_rule() -> None:
+    from mail_ai_agent.config import MailboxConfig
+    from mail_ai_agent.rule_engine import evaluate_rules
+    from mail_ai_agent.schemas import ParsedEmail
+
+    mb = MailboxConfig.model_validate({"mailbox_id": "m", "imap_host": "h", "imap_user": "u@x.pl",
+                                       "imap_pass": "p", "imap_source_folder": "INBOX"})
+    d = evaluate_rules(ParsedEmail(sender="Jan <jan@firma.pl>", subject="Re: Potwierdzenie przelewu Bodora"), mb)
+    assert d.reason != "bank document matched in subject"

@@ -8,6 +8,15 @@ from .folder_mapper import category_to_folder
 from .schemas import ParsedEmail, RuleDecision
 
 BILLING_KEYWORDS = ("faktura", "invoice", "fv", "proforma")
+# Bank documents (statements, repayment schedules, rate changes). Subject-only, anchored phrases:
+# the LLM tagged these inconsistently (other / newsletter / billing) across runs.
+BANK_DOCUMENT_REGEX = re.compile(
+    r"(zestawienie operacji|wyci[ąa]g (z rachunku|bankowy|nr)|harmonogram sp[łl]at|"
+    r"zmiana oprocentowania|potwierdzenie (przelewu|transakcji)|historia (rachunku|transakcji))",
+    flags=re.IGNORECASE,
+)
+# A reply/forward is a conversation between people, never an automated bank document.
+REPLY_PREFIX_REGEX = re.compile(r"^\s*(re|odp|fw|fwd|pd|aw|wg)\s*:", flags=re.IGNORECASE)
 PAYMENT_REGEX = re.compile(
     r"\b("
     r"płatno(?:ść|ści|sci|scią|sci[aą])|"
@@ -114,6 +123,14 @@ def evaluate_rules(parsed_email: ParsedEmail, mailbox: MailboxConfig) -> RuleDec
             target_folder=category_to_folder("spam", mailbox),
             action="skip_ai",
             reason="SpamSieve header matched spam",
+        )
+
+    if BANK_DOCUMENT_REGEX.search(subject) and not REPLY_PREFIX_REGEX.match(subject):
+        return RuleDecision(
+            category="billing",
+            target_folder=category_to_folder("billing", mailbox),
+            action="skip_ai",
+            reason="bank document matched in subject",
         )
 
     if any(keyword in subject for keyword in BILLING_KEYWORDS):
