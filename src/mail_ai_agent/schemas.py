@@ -66,6 +66,25 @@ class LLMClassification(BaseModel):
         return value
 
 
+class LLMActionClassification(BaseModel):
+    """v2: the action axis decides routing; category is only the type tag. Field order matters:
+    Ollama's structured output follows it, so the model commits to the action first."""
+
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    action: Literal["do_zrobienia", "informacja", "szum", "spam"]
+    category: Literal["appointment", "question", "complaint", "spam", "newsletter", "offer", "billing", "system", "other"]
+    confidence: float
+    reasoning_short: str
+
+    @field_validator("confidence")
+    @classmethod
+    def validate_confidence(cls, value: float) -> float:
+        if not 0.0 <= value <= 1.0:
+            raise ValueError("confidence must be between 0.0 and 1.0")
+        return value
+
+
 class RuleDecision(BaseModel):
     category: str
     target_folder: str

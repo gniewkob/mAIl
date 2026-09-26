@@ -168,6 +168,14 @@ class Settings(BaseSettings):
     ollama_num_predict: int = Field(default=2048, alias="OLLAMA_NUM_PREDICT")
     # None = model default (qwen3 thinks); False = no reasoning tokens (much faster). Decide via bench.
     ollama_think: bool | None = Field(default=None, alias="OLLAMA_THINK")
+    # Classifier v2 (action axis + protective signals). Shadow = computed and logged only, never routes.
+    classifier_v2_shadow: bool = Field(default=False, alias="CLASSIFIER_V2_SHADOW")
+    classifier_v2_model: str | None = Field(default=None, alias="CLASSIFIER_V2_MODEL")
+    classifier_v2_think: bool | None = Field(default=None, alias="CLASSIFIER_V2_THINK")
+    # Asymmetric cost: an LLM "noise" verdict below this confidence keeps the mail in INBOX.
+    classifier_v2_noise_min_confidence: float = Field(default=0.75, alias="CLASSIFIER_V2_NOISE_MIN_CONFIDENCE")
+    sent_index_path: Path = Field(default=Path("data/sent-index.json"), alias="SENT_INDEX_PATH")
+    classifier_v2_shadow_log: Path = Field(default=Path("logs/shadow-v2.jsonl"), alias="CLASSIFIER_V2_SHADOW_LOG")
     ollama_circuit_breaker_failures: int = Field(default=3, alias="OLLAMA_CIRCUIT_BREAKER_FAILURES")
     ollama_circuit_breaker_timeout_seconds: int = Field(default=300, alias="OLLAMA_CIRCUIT_BREAKER_TIMEOUT_SECONDS")
 

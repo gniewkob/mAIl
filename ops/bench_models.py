@@ -24,6 +24,8 @@ from pathlib import Path
 from xml.etree import ElementTree as ET
 
 from mail_ai_agent.automated_sender import HUMAN_CATEGORIES, apply_automated_sender_guard
+from mail_ai_agent.classifier_v2 import ActionGateway, classify_v2
+from mail_ai_agent.sent_index import SentIndex
 from mail_ai_agent.config import Settings
 from mail_ai_agent.llm_gateway import LLMGateway
 from mail_ai_agent.rule_engine import evaluate_rules
@@ -73,8 +75,10 @@ def load_labels() -> dict[str, str]:
 
 
 def _parsed(s: dict) -> ParsedEmail:
+    # "to" is dropped: v1 was benchmarked without it; v2 reads thread headers only
+    headers = {k: v for k, v in s.get("headers", {}).items() if k != "to"}
     return ParsedEmail(sender=s["sender"], subject=s["subject"], normalized_body=s["body"],
-                       plain_text_body=s["body"], headers=s.get("headers", {}))
+                       plain_text_body=s["body"], headers=headers)
 
 
 def score(pairs: list[tuple[str, str]]) -> dict:
@@ -92,8 +96,9 @@ def score(pairs: list[tuple[str, str]]) -> dict:
         recall[c] = round(rec, 2)
         f1s.append(2 * prec * rec / (prec + rec) if prec + rec else 0.0)
     critical = sum(1 for g, p in pairs if g in HUMAN_CATEGORIES and p not in HUMAN_CATEGORIES)
+    noise_kept = sum(1 for g, p in pairs if g not in HUMAN_CATEGORIES and p in HUMAN_CATEGORIES)
     return {"n": n, "accuracy": round(acc, 3), "macro_f1": round(sum(f1s) / len(f1s), 3) if f1s else 0,
-            "human_mail_lost": critical, "recall": recall}
+            "human_mail_lost": critical, "noise_left_in_inbox": noise_kept, "recall": recall}
 
 
 def main() -> None:
@@ -101,6 +106,8 @@ def main() -> None:
     ap.add_argument("--env-file", default=".env.multi.prod")
     ap.add_argument("--models", nargs="+", default=["qwen3:8b"])
     ap.add_argument("--smoke", type=int, default=0)
+    ap.add_argument("--v2", action="store_true",
+                    help="run classifier v2 (action axis + protective signals) instead of the v1 prompt")
     ap.add_argument("--rescore", action="store_true",
                     help="re-score saved per-mail predictions against the current labels (no model calls)")
     args = ap.parse_args()
@@ -118,15 +125,15 @@ def main() -> None:
     predictions: dict[str, dict[str, dict]] = {}
     if args.rescore:
         preds = json.loads((GOLD / "bench-predictions.json").read_text())
-        print("| model | pipeline acc | macro-F1 | human mail lost | LLM-only acc | p50 s |")
-        print("|---|---|---|---|---|---|")
+        print("| model | pipeline acc | macro-F1 | human mail lost | noise left in INBOX | LLM-only acc | p50 s |")
+        print("|---|---|---|---|---|---|---|")
         for m, per in preds.items():
             ids = [s["id"] for s in samples if s["id"] in per]
             pipe = score([(labels[i], per[i]["pipeline"]) for i in ids])
             llm = score([(labels[i], per[i]["llm"]) for i in ids])
             lat = sorted(per[i]["s"] for i in ids)
             print(f"| {m} | {pipe['accuracy']:.0%} | {pipe['macro_f1']:.2f} | {pipe['human_mail_lost']} | "
-                  f"{llm['accuracy']:.0%} | {lat[len(lat) // 2]} |")
+                  f"{pipe['noise_left_in_inbox']} | {llm['accuracy']:.0%} | {lat[len(lat) // 2]} |")
         return
     import mail_ai_agent.llm_gateway as gwmod
 
@@ -139,14 +146,29 @@ def main() -> None:
             gwmod._build_generate_payload = lambda **kw: {**original_payload(**kw), "think": False}
         else:
             gwmod._build_generate_payload = original_payload
-        settings = base.model_copy(update={"ollama_model": model, "max_retries": 2})
+        settings = base.model_copy(update={"ollama_model": model, "max_retries": 2, "classifier_v2_model": model,
+                                           "classifier_v2_think": False if variant == "nothink" else None})
         gw = LLMGateway(settings)
-        model = spec
+        v2gw = ActionGateway(settings) if args.v2 else None
+        index = SentIndex.load(settings.sent_index_path) if args.v2 else None
+        model = f"v2:{spec}" if args.v2 else spec
         llm_pairs, pipe_pairs, lat, failures = [], [], [], 0
+        sources: collections.Counter = collections.Counter()
         for s in samples:
             parsed = _parsed(s)
             gold = labels[s["id"]]
             t0 = time.perf_counter()
+            if v2gw is not None:
+                d = classify_v2(parsed, box[s["mailbox"]], settings, v2gw, index)
+                failures += d.source == "llm_error"
+                sources[d.source] += 1
+                lat.append(time.perf_counter() - t0)
+                llm_pairs.append((gold, d.category))
+                pipe_pairs.append((gold, d.category))
+                predictions.setdefault(model, {})[s["id"]] = {"llm": d.category, "pipeline": d.category,
+                                                               "s": round(lat[-1], 2), "source": d.source,
+                                                               "action": d.action}
+                continue
             try:
                 cls, _ = gw.classify(parsed)
                 cls = apply_automated_sender_guard(cls, parsed, base.automated_sender_keep)
@@ -165,6 +187,7 @@ def main() -> None:
         results[model] = {
             "llm": score(llm_pairs), "pipeline": score(pipe_pairs), "failures": failures,
             "p50_s": round(statistics.median(lat), 2), "p90_s": round(lat[int(len(lat) * 0.9) - 1], 2),
+            **({"sources": dict(sources)} if sources else {}),
         }
         print(model, json.dumps(results[model], ensure_ascii=False), flush=True)
     out = GOLD / f"bench-{time.strftime('%Y%m%d-%H%M%S')}.json"

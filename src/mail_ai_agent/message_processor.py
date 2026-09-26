@@ -82,6 +82,11 @@ class MessageProcessor:
         self.drafts = drafts
         self.llm = llm
         self.cleanup_handler = SourceCleanupHandler(state, audit, settings.worker_id)
+        self.shadow = None
+        if getattr(settings, "classifier_v2_shadow", False):
+            from .shadow_v2 import ShadowV2
+
+            self.shadow = ShadowV2(settings)
     
     def process_candidate(
         self,
@@ -572,6 +577,12 @@ class MessageProcessor:
             decision = decide_from_rule(rule)
 
         decision = self._apply_exploration_budget(decision, fingerprint, mailbox)
+
+        if self.shadow is not None and not self.settings.dry_run:
+            try:
+                self.shadow.record(parsed, mailbox, decision.category, fingerprint)
+            except Exception:  # shadow must never affect production routing
+                LOGGER.warning("shadow v2 failed", exc_info=True)
         
         # Save draft if needed
         if decision.draft_reply:

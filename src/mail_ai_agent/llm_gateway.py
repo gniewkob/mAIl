@@ -7,6 +7,7 @@ from functools import lru_cache
 from typing import Any
 
 import requests  # type: ignore[import-untyped]
+from pydantic import BaseModel
 
 from .circuit_breaker import CircuitBreaker, CircuitBreakerOpenError
 from .config import Settings
@@ -63,6 +64,9 @@ Treść:
 
 
 class LLMGateway:
+    prompt_template: str = PROMPT_TEMPLATE
+    result_model: type[BaseModel] = LLMClassification
+
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
         self._circuit_breaker = CircuitBreaker(
@@ -72,14 +76,24 @@ class LLMGateway:
             expected_exception=(requests.RequestException, ValueError),
         )
 
-    def classify(self, parsed_email: ParsedEmail) -> tuple[LLMClassification, int]:
-        prompt = PROMPT_TEMPLATE.format(
-            sender=_escape_format_braces(parsed_email.sender),
-            subject=_escape_format_braces(parsed_email.subject),
-            date=parsed_email.date.isoformat() if parsed_email.date else "",
-            has_attachments=parsed_email.has_attachments,
-            body=_escape_format_braces(parsed_email.normalized_body),
-        )
+    def _model(self) -> str:
+        return self.settings.ollama_model
+
+    def _think(self) -> bool | None:
+        return self.settings.ollama_think
+
+    def _prompt_fields(self, parsed_email: ParsedEmail, **extra: str) -> dict[str, object]:
+        return {
+            "sender": _escape_format_braces(parsed_email.sender),
+            "subject": _escape_format_braces(parsed_email.subject),
+            "date": parsed_email.date.isoformat() if parsed_email.date else "",
+            "has_attachments": parsed_email.has_attachments,
+            "body": _escape_format_braces(parsed_email.normalized_body),
+            **extra,
+        }
+
+    def classify(self, parsed_email: ParsedEmail, **extra: str) -> tuple[Any, int]:
+        prompt = self.prompt_template.format(**self._prompt_fields(parsed_email, **extra))
         
         # Check circuit breaker first for fast failure
         if self._circuit_breaker.state.value == "open":
@@ -88,7 +102,10 @@ class LLMGateway:
                 f"Will retry in {self.settings.ollama_circuit_breaker_timeout_seconds}s."
             )
         
-        def _do_classify() -> tuple[LLMClassification, int]:
+        result_model = self.result_model
+        schema = None if result_model is LLMClassification else _schema_for(result_model)
+
+        def _do_classify() -> tuple[Any, int]:
             started = time.perf_counter()
             raw_output: str = ""
             last_error: Exception | None = None
@@ -98,18 +115,21 @@ class LLMGateway:
                     response = requests.post(
                         f"{self.settings.ollama_url}/api/generate",
                         json=_build_generate_payload(
-                            model=self.settings.ollama_model,
+                            model=self._model(),
                             prompt=prompt,
                             temperature=self.settings.ollama_temperature,
                             num_predict=self.settings.ollama_num_predict,
-                            think=self.settings.ollama_think,
+                            think=self._think(),
+                            **({"schema": schema} if schema is not None else {}),
                         ),
                         timeout=self.settings.ollama_timeout_seconds,
                     )
                     response.raise_for_status()
                     payload = response.json()
                     raw_output = payload.get("response", "")
-                    classification = LLMClassification.model_validate(_normalize_classification_payload(raw_output))
+                    classification = result_model.model_validate(
+                        _normalize_classification_payload(raw_output, allowed_keys=set(result_model.model_fields))
+                    )
                     latency_ms = int((time.perf_counter() - started) * 1000)
                     return classification, latency_ms
                 except (requests.RequestException, ValueError) as exc:
@@ -128,7 +148,8 @@ class LLMGateway:
 
 
 def _build_generate_payload(
-    *, model: str, prompt: str, temperature: float, num_predict: int = 2048, think: bool | None = None
+    *, model: str, prompt: str, temperature: float, num_predict: int = 2048, think: bool | None = None,
+    schema: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     # num_predict caps generation: on 2026-09-26 one qwen3 request ran away past 12k tokens
     # (~15 min) and blocked every other Ollama call. A truncated answer fails JSON validation,
@@ -136,7 +157,7 @@ def _build_generate_payload(
     payload: dict[str, Any] = {
         "model": model,
         "prompt": prompt,
-        "format": _classification_json_schema(),
+        "format": schema if schema is not None else _classification_json_schema(),
         "stream": False,
         "options": {"temperature": temperature, "num_predict": num_predict},
     }
@@ -148,6 +169,13 @@ def _build_generate_payload(
 @lru_cache(maxsize=1)
 def _classification_json_schema() -> dict[str, Any]:
     schema = LLMClassification.model_json_schema()
+    schema.pop("title", None)
+    return schema
+
+
+@lru_cache(maxsize=8)
+def _schema_for(model: type[BaseModel]) -> dict[str, Any]:
+    schema = model.model_json_schema()
     schema.pop("title", None)
     return schema
 
@@ -181,7 +209,7 @@ def _extract_json(raw_output: str) -> str:
     raise ValueError("No complete JSON object found in model output")
 
 
-def _normalize_classification_payload(raw_output: str) -> dict[str, object]:
+def _normalize_classification_payload(raw_output: str, allowed_keys: set[str] | None = None) -> dict[str, object]:
     payload = json.loads(_extract_json(raw_output))
     if not isinstance(payload, dict):
         raise ValueError("LLM payload must be a JSON object")
@@ -192,7 +220,7 @@ def _normalize_classification_payload(raw_output: str) -> dict[str, object]:
     if not isinstance(payload, dict):
         raise ValueError("LLM payload must normalize to a JSON object")
 
-    allowed_keys = {
+    allowed_keys = allowed_keys or {
         "category",
         "priority",
         "requires_reply",
@@ -224,10 +252,13 @@ def _normalize_classification_payload(raw_output: str) -> dict[str, object]:
             pass
     if "priority" in payload and isinstance(payload["priority"], str):
         payload["priority"] = payload["priority"].strip().lower()
-    if "category" in payload and isinstance(payload["category"], str):
-        payload["category"] = payload["category"].strip().lower()
+    for key in ("category", "action"):
+        if key in payload and isinstance(payload[key], str):
+            payload[key] = payload[key].strip().lower()
 
     payload = {key: value for key, value in payload.items() if key in allowed_keys}
+    if "entities" not in allowed_keys:
+        return payload
     entities = payload.get("entities")
     if entities is None or entities == []:
         payload["entities"] = {}
