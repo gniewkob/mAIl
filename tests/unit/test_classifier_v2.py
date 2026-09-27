@@ -26,9 +26,9 @@ def _settings(tmp_path=None, **kw) -> Settings:
 
 
 class FakeGateway:
-    def __init__(self, action="informacja", category="system", confidence=0.9, error=None):
-        self.result = LLMActionClassification(action=action, category=category, confidence=confidence,
-                                              reasoning_short="r")
+    def __init__(self, action="informacja", category="system", confidence=0.9, error=None, offer=False):
+        self.result = LLMActionClassification(unsolicited_offer=offer, action=action, category=category,
+                                              confidence=confidence, reasoning_short="r")
         self.error = error
         self.calls: list[dict] = []
 
@@ -157,7 +157,32 @@ def test_shadow_writes_row_and_swallows_errors(tmp_path) -> None:
 def test_v2_payload_normalization(value) -> None:
     from mail_ai_agent.llm_gateway import _normalize_classification_payload
 
-    raw = json.dumps({"action": value, "category": "Question", "confidence": "0.8", "reasoning_short": "r",
+    raw = json.dumps({"unsolicited_offer": False, "action": value, "category": "Question", "confidence": "0.8", "reasoning_short": "r",
                       "summary": "dropped"})
     out = _normalize_classification_payload(raw, allowed_keys=set(LLMActionClassification.model_fields))
     assert LLMActionClassification.model_validate(out).action == "do_zrobienia"
+
+
+def test_support_ticket_reply_is_protected() -> None:
+    gw = FakeGateway("informacja", "system")
+    mail = _mail(sender="Support <admin@mydevil.net>", subject="Re: Zablokowany dostep przez ssh [#4622670204]")
+    d = classify_v2(mail, _mailbox(), _settings(), gw, _index())
+    assert (d.category, d.source) == ("question", "protect") and gw.calls == []
+    no_reply = _mail(subject="[FAKTURA PL6645011] [#4622670204]")
+    assert classify_v2(no_reply, _mailbox(), _settings(), gw, _index()).source != "protect"
+
+
+def test_unsolicited_offer_is_spam_unless_correspondent() -> None:
+    gw = FakeGateway("spam", "offer", offer=True)
+    d = classify_v2(_mail(subject="Re: Raport dla domeny"), _mailbox(), _settings(), gw, _index())
+    assert (d.category, d.source) == ("spam", "llm_offer")
+    known = classify_v2(_mail(), _mailbox(), _settings(), gw, _index(correspondents=["biuro@firma.pl"]))
+    assert known.category == "question"  # correspondent floor
+    bulk = _mail(headers={"list-unsubscribe": "<mailto:u@x>"})
+    assert classify_v2(bulk, _mailbox(), _settings(), gw, _index()).category == "newsletter"
+
+
+def test_offer_flag_does_not_override_needed_action() -> None:
+    gw = FakeGateway("do_zrobienia", "appointment", offer=True)
+    d = classify_v2(_mail(subject="Termin"), _mailbox(), _settings(), gw, _index())
+    assert (d.category, d.source) == ("appointment", "llm")

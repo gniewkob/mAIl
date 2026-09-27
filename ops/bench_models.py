@@ -190,6 +190,10 @@ def main() -> None:
             **({"sources": dict(sources)} if sources else {}),
         }
         print(model, json.dumps(results[model], ensure_ascii=False), flush=True)
+        preds_path = GOLD / "bench-predictions.json"  # after every model: a killed run keeps finished ones
+        saved = json.loads(preds_path.read_text()) if preds_path.exists() else {}
+        saved[model] = predictions[model]
+        preds_path.write_text(json.dumps(saved, indent=1))
     out = GOLD / f"bench-{time.strftime('%Y%m%d-%H%M%S')}.json"
     out.write_text(json.dumps({"labels": len(samples), "smoke": bool(args.smoke), "results": results}, indent=2))
     print("\n| model | pipeline acc | macro-F1 | human mail lost | LLM-only acc | failures | p50 s |")

@@ -28,29 +28,46 @@ HARD_RULE_REASONS = {
     "SpamSieve header matched spam",
     "bank document matched in subject",
     "system pattern matched",
-    "complaint pattern matched",
-}
+}  # complaint regex is keyword-based: shop footers ("regulamin reklamacji") hit it, so the LLM decides
 BOOKING_REGEX = re.compile(
     r"(nowa rezerwacja|zmian\w* w rezerwacji|rezerwacja online|odwoła\w* (wizyt|rezerwacj)\w*|"
     r"anulowa\w* (wizyt|rezerwacj)\w*|przełożon\w* wizyt\w*)",
     re.IGNORECASE,
 )
 
+# Support/helpdesk reply to a ticket the owner opened via a web form (no Message-ID of ours to match)
+TICKET_REGEX = re.compile(r"(\[#\s?\d{5,}\]|\[[a-z]{2,10}#\s?\d{5,}\]|ticket\s?#\s?\d{4,}|zg[łl]oszeni\w* nr\.?\s?\d{4,})",
+                          re.IGNORECASE)
+
 PROMPT_V2 = """Pomagasz właścicielowi skrzynek pocztowych zdecydować, które wiadomości wymagają jego uwagi.
 Właściciel prowadzi małe firmy (m.in. salon usługowy z rezerwacjami przez Booksy) i ma pocztę prywatną.
 Najważniejsze pytanie: czy ta wiadomość wymaga DZIAŁANIA odbiorcy?
 
+unsolicited_offer: true, jeśli nadawca próbuje coś sprzedać lub zaproponować usługę, o którą odbiorca
+nie prosił (SEO, pozycjonowanie, opinie Google, reklama, strony www, finansowanie, faktoring, pożyczki,
+energia, gadżety, "współpraca"), także gdy pisze imiennie, zadaje pytanie albo ma "Re:" w temacie.
+false dla odpowiedzi na zapytanie odbiorcy, faktur za usługi, z których korzysta, i wiadomości od klientów.
+
 action (wybierz jedno):
-- "do_zrobienia": odbiorca powinien coś zrobić: odpowiedzieć, podjąć decyzję, zapłacić konkretną
-  należność, dostarczyć dokument/zdjęcie/dane, potwierdzić zamówienie lub termin, zareagować
-  w zgłoszeniu (ticket), odebrać przesyłkę wymagającą działania, stawić się na wizytę.
-  Także każda odpowiedź w toczącej się korespondencji z konkretną osobą lub firmą.
-  Automatyczny nadawca (no-reply) NIE wyklucza tej opcji, jeśli treść wymaga działania.
-- "informacja": dotyczy odbiorcy osobiście, ale nie wymaga działania: potwierdzenie płatności,
-  status wysyłki, wyciąg bankowy, opłacona faktura, powiadomienie o logowaniu lub zmianie regulaminu.
+- "do_zrobienia": odbiorca musi osobiście coś zrobić w sprawie, którą sam prowadzi: odpowiedzieć
+  konkretnej osobie lub firmie w toczącej się sprawie, dostarczyć dokument/zdjęcia/dane, o które go
+  poproszono, potwierdzić zamówienie lub termin, zareagować w swoim zgłoszeniu (ticket), podjąć decyzję.
+  Także pytania i prośby klientów, odpowiedzi supportu w zgłoszeniach odbiorcy oraz pisma z urzędów
+  i instytucji publicznych (urząd skarbowy, ZUS, e-recepta, sąd, ubezpieczyciel). Automatyczny nadawca (no-reply) nie wyklucza tej opcji,
+  jeśli bez działania odbiorcy sprawa utknie (np. zamówienie czeka na potwierdzenie, ubezpieczyciel czeka na zdjęcia).
+- "informacja": dotyczy odbiorcy, ale jest rutynowa i obsługuje ją on w folderach, nie od razu.
 - "szum": treść masowa: newsletter, promocja, reklama, powiadomienie marketingowe.
-- "spam": oszustwo, phishing, podejrzana lub niezamówiona masowa oferta handlowa (cold outreach).
-W razie wątpliwości między "do_zrobienia" a "informacja" wybierz "do_zrobienia".
+- "spam": oszustwo, phishing, podszywanie się pod bank lub kuriera.
+
+To NIE jest "do_zrobienia", nawet jeśli wiadomość wzywa do działania:
+- niezamówiona oferta lub cold outreach (SEO, pozycjonowanie, opinie Google, reklama, strony www,
+  finansowanie, faktoring, pożyczki, energia, gadżety), także imienna, z pytaniem lub "Re:" w temacie,
+  gdy właściciel nigdy nie pisał do nadawcy -> action "spam", category "spam";
+- faktury, rachunki, rozliczenia i dokumenty od księgowej, wezwania do zapłaty, informacje o zadłużeniu,
+  nieudane odnowienia subskrypcji -> action "informacja", category "billing";
+- kody weryfikacyjne, potwierdzenia rejestracji, statusy zamówień, paczek i zwrotów (również
+  "gotowa do odbioru"), prośby o ocenę, powiadomienia o koncie -> action "informacja", category "system".
+W pozostałych wątpliwych przypadkach między "do_zrobienia" a "informacja" wybierz "do_zrobienia".
 
 category (typ wiadomości, tylko do opisu):
 appointment (rezerwacja, wizyta, termin spotkania), question (sprawa wymagająca działania),
@@ -128,6 +145,9 @@ def classify_v2(parsed: ParsedEmail, mailbox: MailboxConfig, settings: Settings,
         return V2Decision("question", "protect", "reply to a message the owner sent")
     if is_booking(parsed, mailbox):
         return V2Decision("appointment", "protect", "booking notification from own/trusted domain")
+    subject = parsed.subject or ""
+    if REPLY_PREFIX_REGEX.match(subject) and TICKET_REGEX.search(subject) and not is_bulk(parsed):
+        return V2Decision("question", "protect", "reply in a support ticket")
 
     bulk = is_bulk(parsed)
     rule = evaluate_rules(parsed, mailbox)
@@ -144,6 +164,11 @@ def classify_v2(parsed: ParsedEmail, mailbox: MailboxConfig, settings: Settings,
     except Exception as exc:  # the worker must keep the mail in INBOX on any model failure
         return V2Decision("other", "llm_error", f"{type(exc).__name__}")
 
+    # An offer the model still thinks needs action is ambiguous (a new customer writing "Termin"): let the
+    # action decide. Bulk offers go to newsletter, not spam: Junk is reported to the server's spam filter.
+    if result.unsolicited_offer and not correspondent and result.action != "do_zrobienia":
+        return V2Decision("newsletter" if bulk else "spam", "llm_offer",
+                          "unsolicited offer from a sender the owner never wrote to", result.action, result.confidence)
     if result.action == "spam":
         category = "spam"
     elif result.action == "do_zrobienia":

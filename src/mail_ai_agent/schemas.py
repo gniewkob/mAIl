@@ -72,6 +72,7 @@ class LLMActionClassification(BaseModel):
 
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
+    unsolicited_offer: bool
     action: Literal["do_zrobienia", "informacja", "szum", "spam"]
     category: Literal["appointment", "question", "complaint", "spam", "newsletter", "offer", "billing", "system", "other"]
     confidence: float
