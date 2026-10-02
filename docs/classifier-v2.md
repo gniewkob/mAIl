@@ -30,3 +30,13 @@ Stores sha256 hashes only, `data/sent-index.json` (0600).
    Production routing is untouched; one extra model call per message.
 3. Switch: separate change, per mailbox, after owner review of shadow disagreements.
 Rollback of shadow: remove `CLASSIFIER_V2_SHADOW` from `.env.multi.prod` (worker reads env per run).
+
+## 2026-10-02 additions (after 5 days of shadow)
+- Production: `CLASSIFIER_V2_PROTECT=true` — protective signals (reply to owner, booking, ticket reply)
+  decide before rules and the v1 LLM. Shadow: 66 protective decisions, none wrong; v1 had filed 11/62 bookings as noise.
+- Mailbox phishing rule: subject about expiring password / helpdesk / full mailbox from a domain other than
+  the mailbox's own or the provider (mydevil.net) -> spam, without the LLM.
+- Payment notices: LLM "needs action" + type billing stays billing only when the subject names an invoice,
+  payment, arrears or subscription (PAYMENT_SUBJECT_REGEX) and is not a reply. A broader version lost
+  insurer/refund mails (golden 6 -> 11 lost) and was narrowed.
+- Golden (dev set): accuracy 70% -> 72%, human mail lost 6 -> 6, noise left in INBOX 18 -> 14.

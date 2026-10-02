@@ -35,6 +35,21 @@ BOOKING_REGEX = re.compile(
     re.IGNORECASE,
 )
 
+# Credential phishing against the mailbox itself ("your password expires", "IT Helpdesk alert"):
+# the LLM read these as "needs action". Legit notices come from the mailbox's own domain/provider.
+PHISHING_REGEX = re.compile(
+    r"(has[łl]o\w*.{0,40}wygasa|wygasa\w*.{0,30}has[łl]|password.{0,30}expir|expir\w*.{0,30}password|"
+    r"helpdesk|help desk|skrzynk\w*.{0,30}(pe[łl]n|zablokowan|zawieszon|limit)|mailbox.{0,20}(full|quota|suspend)|"
+    r"zweryfikuj\w* (swoj\w* )?(konto|skrzynk)|verify your (mailbox|email account))",
+    re.IGNORECASE,
+)
+MAIL_PROVIDER_DOMAINS = {"mydevil.net"}
+PAYMENT_SUBJECT_REGEX = re.compile(
+    r"(faktur|f@ktur|rachun|p[łl]atno[śs]|zaleg[łl]|zad[łl]u[żz]|op[łl]a[ćc]|nale[żz]no[śs]|wezwani\w* do zap|"
+    r"invoice|payment|subskrypcj|subscription)",
+    re.IGNORECASE,
+)
+
 # Support/helpdesk reply to a ticket the owner opened via a web form (no Message-ID of ours to match)
 TICKET_REGEX = re.compile(r"(\[#\s?\d{5,}\]|\[[a-z]{2,10}#\s?\d{5,}\]|ticket\s?#\s?\d{4,}|zg[łl]oszeni\w* nr\.?\s?\d{4,})",
                           re.IGNORECASE)
@@ -129,6 +144,15 @@ def is_booking(parsed: ParsedEmail, mailbox: MailboxConfig) -> bool:
     )
 
 
+def is_mailbox_phishing(parsed: ParsedEmail, mailbox: MailboxConfig) -> bool:
+    if not PHISHING_REGEX.search(parsed.subject or ""):
+        return False
+    sender_domain = _domain(parsed.sender)
+    own = _domain(mailbox.imap_user)
+    return bool(sender_domain) and sender_domain != own and not any(
+        sender_domain == d or sender_domain.endswith("." + d) for d in MAIL_PROVIDER_DOMAINS)
+
+
 def _signals_text(reply_to_me: bool, correspondent: bool, bulk: bool, reply_prefix: bool) -> str:
     yn = {True: "tak", False: "nie"}
     return (f"odpowiedź na wiadomość wysłaną przez właściciela: {yn[reply_to_me]}; "
@@ -156,6 +180,8 @@ def classify_v2(parsed: ParsedEmail, mailbox: MailboxConfig, settings: Settings,
     protected = protective_decision(parsed, mailbox, index)
     if protected is not None:
         return protected
+    if is_mailbox_phishing(parsed, mailbox):
+        return V2Decision("spam", "rule", "mailbox credential phishing from a foreign domain")
 
     bulk = is_bulk(parsed)
     rule = evaluate_rules(parsed, mailbox)
@@ -179,6 +205,13 @@ def classify_v2(parsed: ParsedEmail, mailbox: MailboxConfig, settings: Settings,
                           "unsolicited offer from a sender the owner never wrote to", result.action, result.confidence)
     if result.action == "spam":
         category = "spam"
+    elif result.action == "do_zrobienia" and result.category == "billing" \
+            and PAYMENT_SUBJECT_REGEX.search(parsed.subject or "") \
+            and not REPLY_PREFIX_REGEX.match(parsed.subject or ""):
+        # Owner files invoices, arrears and payment notices in Billing even when they ask for payment
+        # (shadow 2026-09-27..10-02: ~14 such mails kept in INBOX). Only when the subject says so:
+        # without that gate the rule also took "insurer waits for photos" and refund cases (golden 6 -> 11 lost).
+        category = "billing"
     elif result.action == "do_zrobienia":
         category = result.category if result.category in HUMAN_CATEGORIES else "question"
     else:

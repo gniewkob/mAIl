@@ -93,7 +93,10 @@ def test_keyword_rule_needs_bulk_otherwise_llm_decides() -> None:
 
 def test_action_maps_to_category() -> None:
     s, m, ix = _settings(), _mailbox(), _index()
-    assert classify_v2(_mail(), m, s, FakeGateway("do_zrobienia", "billing"), ix).category == "question"
+    assert classify_v2(_mail(), m, s, FakeGateway("do_zrobienia", "system"), ix).category == "question"
+    assert classify_v2(_mail(subject="Faktura 12/2026"), m, s, FakeGateway("do_zrobienia", "billing"), ix).category == "billing"
+    assert classify_v2(_mail(subject="Polisa - czekamy na zdjęcia"), m, s,
+                       FakeGateway("do_zrobienia", "billing"), ix).category == "question"
     assert classify_v2(_mail(), m, s, FakeGateway("do_zrobienia", "appointment"), ix).category == "appointment"
     assert classify_v2(_mail(), m, s, FakeGateway("informacja", "billing"), ix).category == "billing"
     assert classify_v2(_mail(), m, s, FakeGateway("spam", "offer"), ix).category == "spam"
@@ -186,3 +189,27 @@ def test_offer_flag_does_not_override_needed_action() -> None:
     gw = FakeGateway("do_zrobienia", "appointment", offer=True)
     d = classify_v2(_mail(subject="Termin"), _mailbox(), _settings(), gw, _index())
     assert (d.category, d.source) == ("appointment", "llm")
+
+
+@pytest.mark.parametrize("subject", [
+    "Alert IT Helpdesku: Twoje hasło wygasa dziś – wymagana akcja",
+    "PILNE I OSTATNIE POWIADOMIENIE!!: Hasło dla kontakt@salon-bw.pl wygasa",
+    "Your mailbox is full - verify your email account",
+])
+def test_mailbox_phishing_from_foreign_domain_is_spam(subject) -> None:
+    gw = FakeGateway("do_zrobienia", "question")
+    d = classify_v2(_mail(sender="IT <it@placehomex.com>", subject=subject), _mailbox(), _settings(), gw, _index())
+    assert (d.category, d.source) == ("spam", "rule") and gw.calls == []
+
+
+def test_password_notice_from_own_domain_or_provider_is_not_phishing() -> None:
+    for sender in ("admin@salon-bw.pl", "Support <admin@mydevil.net>"):
+        d = classify_v2(_mail(sender=sender, subject="Hasło wygasa za 7 dni"), _mailbox(), _settings(),
+                        FakeGateway("do_zrobienia", "system"), _index())
+        assert d.category != "spam"
+
+
+def test_payment_notice_needing_action_stays_billing_but_reply_is_human() -> None:
+    gw = FakeGateway("do_zrobienia", "billing")
+    assert classify_v2(_mail(subject="Opłać zaległość"), _mailbox(), _settings(), gw, _index()).category == "billing"
+    assert classify_v2(_mail(subject="Re: faktura 12/2026"), _mailbox(), _settings(), gw, _index()).category == "question"
