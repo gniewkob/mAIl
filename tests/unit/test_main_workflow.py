@@ -1110,3 +1110,52 @@ def test_mailbox_manifest_can_override_routing_strategy(tmp_path: Path) -> None:
     assert box.routing_strategy == "hybrid"
     inherit = settings._normalize_mailbox({"mailbox_id": "other", "imap_user": "o@example.com", "imap_pass": "x"})
     assert inherit.routing_strategy is None
+
+
+class FakeReplyIMAPClient(FakeIMAPClient):
+    """A reply to a message the owner sent, flagged as spam by the server."""
+
+    def fetch_candidates(self, folder: str) -> list[CandidateMessage]:
+        message = EmailMessage()
+        message["From"] = "firma@example.org"
+        message["Subject"] = "Re: wycena"
+        message["Message-ID"] = "<reply-1@example.org>"
+        message["In-Reply-To"] = "<sent-1@example.com>"
+        message["X-Spam-Flag"] = "YES"
+        message.set_content("W załączeniu wycena, proszę o decyzję.")
+        return [CandidateMessage(uid="42", uidvalidity="999", internaldate=None, raw_bytes=message.as_bytes())]
+
+
+def _protect_settings(tmp_path: Path, protect: bool) -> Settings:
+    from mail_ai_agent.sent_index import SentIndex, _h
+
+    index_path = tmp_path / "sent-index.json"
+    SentIndex({_h("<sent-1@example.com>")}, set(), set()).save(index_path)
+    return make_settings(tmp_path).model_copy(update={
+        "dry_run": False, "routing_strategy": "hybrid", "imap_tag_prefix": "$AI_",
+        "classifier_v2_protect": protect, "sent_index_path": index_path,
+    })
+
+
+def test_protect_keeps_reply_to_owner_in_inbox(monkeypatch, tmp_path: Path) -> None:
+    from mail_ai_agent.main import process_inbox
+
+    monkeypatch.setattr("mail_ai_agent.main.IMAPClient", FakeReplyIMAPClient)
+    monkeypatch.setattr("mail_ai_agent.main.LLMGateway", FakeNewsletterLLMGateway)
+
+    report = process_inbox(_protect_settings(tmp_path, protect=True))
+
+    assert report.processed == 1
+    assert FakeReplyIMAPClient.copied == [] and FakeReplyIMAPClient.deleted == []
+    assert FakeReplyIMAPClient.keywords == [("INBOX.AI-Review", "42", "$AI_question")]
+
+
+def test_protect_disabled_keeps_previous_behaviour(monkeypatch, tmp_path: Path) -> None:
+    from mail_ai_agent.main import process_inbox
+
+    monkeypatch.setattr("mail_ai_agent.main.IMAPClient", FakeReplyIMAPClient)
+    monkeypatch.setattr("mail_ai_agent.main.LLMGateway", FakeNewsletterLLMGateway)
+
+    process_inbox(_protect_settings(tmp_path, protect=False))
+
+    assert FakeReplyIMAPClient.copied and FakeReplyIMAPClient.copied[0][2] != "INBOX.AI-Review"

@@ -137,17 +137,25 @@ def _signals_text(reply_to_me: bool, correspondent: bool, bulk: bool, reply_pref
             f"masowa wysyłka (List-Unsubscribe/List-Id): {yn[bulk]}")
 
 
-def classify_v2(parsed: ParsedEmail, mailbox: MailboxConfig, settings: Settings,
-                gateway: ActionGateway, index: SentIndex) -> V2Decision:
+def protective_decision(parsed: ParsedEmail, mailbox: MailboxConfig, index: SentIndex) -> V2Decision | None:
+    """Deterministic 'this is for the owner' signals. Used by classify_v2 and, with
+    CLASSIFIER_V2_PROTECT=true, by production ahead of rule_engine and the v1 LLM."""
     headers = {str(k).lower(): str(v) for k, v in (parsed.headers or {}).items()}
-    reply_to_me = index.is_reply_to_me(headers.get("in-reply-to"), headers.get("references"))
-    if reply_to_me:
+    if index.is_reply_to_me(headers.get("in-reply-to"), headers.get("references")):
         return V2Decision("question", "protect", "reply to a message the owner sent")
     if is_booking(parsed, mailbox):
         return V2Decision("appointment", "protect", "booking notification from own/trusted domain")
     subject = parsed.subject or ""
     if REPLY_PREFIX_REGEX.match(subject) and TICKET_REGEX.search(subject) and not is_bulk(parsed):
         return V2Decision("question", "protect", "reply in a support ticket")
+    return None
+
+
+def classify_v2(parsed: ParsedEmail, mailbox: MailboxConfig, settings: Settings,
+                gateway: ActionGateway, index: SentIndex) -> V2Decision:
+    protected = protective_decision(parsed, mailbox, index)
+    if protected is not None:
+        return protected
 
     bulk = is_bulk(parsed)
     rule = evaluate_rules(parsed, mailbox)

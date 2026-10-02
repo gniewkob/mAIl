@@ -144,3 +144,18 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
+
+_CACHE: dict[str, object] = {"path": None, "mtime": None, "index": SentIndex()}
+
+
+def load_cached(path: Path | str = DEFAULT_PATH) -> SentIndex:
+    """Reload only when the file changed (the worker calls this once per message)."""
+    p = Path(path)
+    try:
+        mtime = p.stat().st_mtime
+    except OSError:
+        return _CACHE["index"]  # type: ignore[return-value]
+    if _CACHE["path"] != str(p) or _CACHE["mtime"] != mtime:
+        _CACHE.update(path=str(p), mtime=mtime, index=SentIndex.load(p))
+    return _CACHE["index"]  # type: ignore[return-value]

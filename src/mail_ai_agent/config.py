@@ -170,6 +170,8 @@ class Settings(BaseSettings):
     ollama_think: bool | None = Field(default=None, alias="OLLAMA_THINK")
     # Classifier v2 (action axis + protective signals). Shadow = computed and logged only, never routes.
     classifier_v2_shadow: bool = Field(default=False, alias="CLASSIFIER_V2_SHADOW")
+    # Production: v2 protective signals (reply to owner, booking, ticket reply) decide before rules/LLM.
+    classifier_v2_protect: bool = Field(default=False, alias="CLASSIFIER_V2_PROTECT")
     classifier_v2_model: str | None = Field(default=None, alias="CLASSIFIER_V2_MODEL")
     classifier_v2_think: bool | None = Field(default=None, alias="CLASSIFIER_V2_THINK")
     # Asymmetric cost: an LLM "noise" verdict below this confidence keeps the mail in INBOX.

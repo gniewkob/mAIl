@@ -132,6 +132,7 @@ class MessageProcessor:
         
         # Evaluate rules (needed for both routing and error handling)
         rule = evaluate_rules(parsed, mailbox)
+        rule = self._apply_protective_signals(parsed, mailbox, rule)
         
         # Step 3: Classify and route
         try:
@@ -738,6 +739,30 @@ class MessageProcessor:
                 latency_ms=duration_ms,
                 error=str(exc),
             )
+
+    def _apply_protective_signals(self, parsed: ParsedEmail, mailbox: MailboxConfig, rule: "RuleDecision") -> "RuleDecision":
+        """CLASSIFIER_V2_PROTECT: replies to the owner's own mail, bookings from own/trusted domains and
+        support-ticket replies are human mail regardless of spam headers or keyword rules (shadow
+        2026-09-27..10-02: 66 decisions, 0 wrong; production had sent 11 of 62 bookings to Newsletter)."""
+        if not getattr(self.settings, "classifier_v2_protect", False):
+            return rule
+        try:
+            from .classifier_v2 import protective_decision
+            from .schemas import RuleDecision
+            from .sent_index import load_cached
+
+            protected = protective_decision(parsed, mailbox, load_cached(self.settings.sent_index_path))
+        except Exception:  # a broken index must never block processing
+            LOGGER.warning("protective signals failed; falling back to rules", exc_info=True)
+            return rule
+        if protected is None:
+            return rule
+        return RuleDecision(
+            category=protected.category,
+            target_folder=category_to_folder(protected.category, mailbox),
+            action="skip_ai",
+            reason=f"v2 protect: {protected.reason}",
+        )
 
     def _strategy(self, mailbox: MailboxConfig) -> str:
         """Effective routing strategy: per-mailbox override, else the global setting."""
