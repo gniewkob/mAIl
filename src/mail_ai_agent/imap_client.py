@@ -9,8 +9,12 @@ import time
 from contextlib import AbstractContextManager
 from typing import Callable, Generator, TypeVar
 
+import logging
+
 from .config import MailboxConfig, get_imap_search_tokens
 from .schemas import CandidateMessage
+
+LOGGER = logging.getLogger(__name__)
 
 T = TypeVar("T")
 
@@ -576,6 +580,13 @@ class IMAPClient(AbstractContextManager["IMAPClient"]):
             status, _ = self.connection.select(folder)
             if status != "OK":
                 raise RuntimeError(f"Unable to select folder {folder}")
+            # Already gone (e.g. the owner deleted it in the mail client): the goal is reached.
+            # Without this, STORE on a missing UID is a silent no-op and the safety check below
+            # refuses every 5 minutes forever ("deleted set is [], expected only [uid]").
+            status, found = self.connection.uid("search", None, "UID", uid)
+            if status == "OK" and uid not in (found[0].decode() if found and found[0] else "").split():
+                LOGGER.info("delete_message: UID %s no longer in %s, treating as deleted", uid, folder)
+                return
             pre_existing_deleted = self._search_deleted_uids()
             if pre_existing_deleted and uid not in pre_existing_deleted:
                 raise RuntimeError(

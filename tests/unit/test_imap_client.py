@@ -674,3 +674,20 @@ def test_imap4_ssl_receives_ssl_context(monkeypatch) -> None:
     assert ctx is not None, "ssl_context must be passed to IMAP4_SSL"
     assert isinstance(ctx, _ssl.SSLContext)
     assert ctx.verify_mode == _ssl.CERT_REQUIRED
+
+
+def test_delete_message_missing_uid_is_treated_as_deleted(monkeypatch) -> None:
+    # 2026-10-02: UID removed by the owner in Mail.app; cleanup retried every 5 min with
+    # "deleted set is [], expected only [85675]". A missing UID must be a no-op success.
+    mailbox = make_mailbox().model_copy(update={"imap_allow_folder_expunge": True})
+    connection = FakeFlakyConnection(search_uids=b"")
+    connection.capabilities = {b"IMAP4REV1"}
+
+    monkeypatch.setattr("mail_ai_agent.imap_client.imaplib.IMAP4_SSL", lambda *_, **__: connection)
+    monkeypatch.setattr("mail_ai_agent.imap_client.time.sleep", lambda _: None)
+
+    with IMAPClient(mailbox) as client:
+        client.delete_message("INBOX", "85675")
+
+    assert connection.store_calls == []
+    assert connection.expunge_calls == 0
