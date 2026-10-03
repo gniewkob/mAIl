@@ -1148,6 +1148,9 @@ def test_protect_keeps_reply_to_owner_in_inbox(monkeypatch, tmp_path: Path) -> N
     assert report.processed == 1
     assert FakeReplyIMAPClient.copied == [] and FakeReplyIMAPClient.deleted == []
     assert FakeReplyIMAPClient.keywords == [("INBOX.AI-Review", "42", "$AI_question")]
+    import json as _json
+    rows = [_json.loads(x) for x in (tmp_path / "audit.jsonl").read_text().splitlines()]
+    assert any(str(r.get("route_reason", "")).startswith("v2 protect: reply") for r in rows)
 
 
 def test_protect_disabled_keeps_previous_behaviour(monkeypatch, tmp_path: Path) -> None:

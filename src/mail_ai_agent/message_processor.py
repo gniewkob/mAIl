@@ -712,6 +712,8 @@ class MessageProcessor:
                 duration_ms=duration_ms,
                 error=None,
                 dry_run=False,
+                # fixed rule names only (never LLM text: it can quote the message)
+                route_reason=(rule.reason if rule is not None and rule.action != "needs_llm" else "llm"),
             )
             
             return ProcessingResult(
