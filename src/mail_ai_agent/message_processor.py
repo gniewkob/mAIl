@@ -82,6 +82,7 @@ class MessageProcessor:
         self.drafts = drafts
         self.llm = llm
         self.cleanup_handler = SourceCleanupHandler(state, audit, settings.worker_id)
+        self._v2_gateway = None
         self.shadow = None
         if getattr(settings, "classifier_v2_shadow", False):
             from .shadow_v2 import ShadowV2
@@ -562,7 +563,9 @@ class MessageProcessor:
         draft_path = None
         latency_ms = None
         
-        if rule.action == "needs_llm":
+        if getattr(mailbox, "classifier", "v1") == "v2":
+            decision, rule = self._decide_v2(parsed, mailbox)
+        elif rule.action == "needs_llm":
             sender_sha = _hash_value(parsed.sender) or ""
             prior_decision = self._decision_from_sender_prior(mailbox.mailbox_id, sender_sha, mailbox)
             if prior_decision is not None:
@@ -579,7 +582,7 @@ class MessageProcessor:
 
         decision = self._apply_exploration_budget(decision, fingerprint, mailbox)
 
-        if self.shadow is not None and not self.settings.dry_run:
+        if self.shadow is not None and not self.settings.dry_run and getattr(mailbox, "classifier", "v1") != "v2":
             try:
                 self.shadow.record(parsed, mailbox, decision.category, fingerprint)
             except Exception:  # shadow must never affect production routing
@@ -741,6 +744,35 @@ class MessageProcessor:
                 latency_ms=duration_ms,
                 error=str(exc),
             )
+
+    _V2_LLM_SOURCES = frozenset({"llm", "llm_offer", "floor_correspondent", "floor_confidence"})
+
+    def _decide_v2(self, parsed: ParsedEmail, mailbox: MailboxConfig) -> tuple[FinalDecision, "RuleDecision"]:
+        """Mailbox with classifier=v2: classifier_v2 decides; routing (hybrid) is unchanged.
+        A model failure raises RuntimeError -> the existing LLM-failure path (stays in INBOX, uncertain)."""
+        from .classifier_v2 import ActionGateway, classify_v2
+        from .schemas import RuleDecision
+        from .sent_index import load_cached
+
+        if self._v2_gateway is None:
+            self._v2_gateway = ActionGateway(self.settings)
+        d = classify_v2(parsed, mailbox, self.settings, self._v2_gateway, load_cached(self.settings.sent_index_path))
+        if d.source == "llm_error":
+            raise RuntimeError(f"classifier v2 LLM failed: {d.reason}")
+        llm_based = d.source in self._V2_LLM_SOURCES
+        # audit route_reason: fixed text only; never the model's reasoning (it can quote the message)
+        reason = f"v2 {d.source}" if llm_based else f"v2 {d.source}: {d.reason}"
+        rule = RuleDecision(category=d.category, target_folder=category_to_folder(d.category, mailbox),
+                            action="skip_ai", reason=reason)
+        decision = decide_from_rule(rule)
+        if llm_based:
+            decision = decision.model_copy(update={
+                "action_taken": ActionTaken.ROUTE_FROM_LLM,
+                "confidence": d.confidence if d.confidence is not None else 1.0,
+                "summary": "classifier v2",
+                "reasoning_short": (d.reason or "")[:200],
+            })
+        return decision, rule
 
     def _apply_protective_signals(self, parsed: ParsedEmail, mailbox: MailboxConfig, rule: "RuleDecision") -> "RuleDecision":
         """CLASSIFIER_V2_PROTECT: replies to the owner's own mail, bookings from own/trusted domains and

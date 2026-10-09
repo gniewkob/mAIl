@@ -1162,3 +1162,58 @@ def test_protect_disabled_keeps_previous_behaviour(monkeypatch, tmp_path: Path) 
     process_inbox(_protect_settings(tmp_path, protect=False))
 
     assert FakeReplyIMAPClient.copied and FakeReplyIMAPClient.copied[0][2] != "INBOX.AI-Review"
+
+
+class _FakeV2Gateway:
+    def __init__(self, settings, *, fail: bool = False, action: str = "informacja", category: str = "newsletter"):
+        self.fail, self.action, self.category = fail, action, category
+
+    def classify(self, parsed, **extra):
+        from mail_ai_agent.schemas import LLMActionClassification
+
+        if self.fail:
+            raise RuntimeError("ollama down")
+        return LLMActionClassification(unsolicited_offer=False, action=self.action, category=self.category,
+                                       confidence=0.9, reasoning_short="model text that must not reach the audit"), 5
+
+
+def _v2_mailbox_settings(monkeypatch, tmp_path: Path, gateway_factory) -> Settings:
+    from mail_ai_agent.config import MailboxConfig
+
+    settings = _protect_settings(tmp_path, protect=True)
+    box = MailboxConfig.from_settings(settings).model_copy(update={"classifier": "v2"})
+    monkeypatch.setattr(Settings, "load_mailboxes", lambda self: [box])
+    monkeypatch.setattr("mail_ai_agent.classifier_v2.ActionGateway", gateway_factory)
+    monkeypatch.setattr("mail_ai_agent.main.IMAPClient", FakeIMAPClient)
+    monkeypatch.setattr("mail_ai_agent.main.LLMGateway", FakeFailingLLMGateway)  # v1 must not be used
+    return settings
+
+
+def test_v2_mailbox_routes_with_classifier_v2(monkeypatch, tmp_path: Path) -> None:
+    from mail_ai_agent.main import process_inbox
+
+    settings = _v2_mailbox_settings(monkeypatch, tmp_path, lambda s: _FakeV2Gateway(s))
+    report = process_inbox(settings)
+
+    assert report.processed == 1
+    assert FakeIMAPClient.copied == [("INBOX.AI-Review", "42", "INBOX.Newsletter")]
+    audit = (tmp_path / "audit.jsonl").read_text()
+    assert '"route_reason": "v2 llm"' in audit
+    assert "must not reach the audit" not in audit
+
+
+def test_v2_mailbox_model_failure_keeps_mail_in_inbox(monkeypatch, tmp_path: Path) -> None:
+    from mail_ai_agent.main import process_inbox
+
+    settings = _v2_mailbox_settings(monkeypatch, tmp_path, lambda s: _FakeV2Gateway(s, fail=True))
+    report = process_inbox(settings)
+
+    assert report.uncertain == 1
+    assert FakeIMAPClient.copied == [] and FakeIMAPClient.deleted == []
+
+
+def test_mailbox_manifest_classifier_defaults_to_v1(tmp_path: Path) -> None:
+    settings = make_settings(tmp_path)
+    v2 = settings._normalize_mailbox({"mailbox_id": "g", "imap_user": "g@example.com", "imap_pass": "x", "classifier": "v2"})
+    v1 = settings._normalize_mailbox({"mailbox_id": "o", "imap_user": "o@example.com", "imap_pass": "x"})
+    assert (v2.classifier, v1.classifier) == ("v2", "v1")

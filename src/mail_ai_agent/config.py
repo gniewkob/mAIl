@@ -90,6 +90,8 @@ class MailboxConfig(BaseModel):
     routing_strategy: Literal["move", "tag_only", "copy_plus_tag", "hybrid"] | None = None
     # Trusted automated senders (copied from AUTOMATED_SENDER_KEEP): never spam, may stay in INBOX.
     automated_sender_keep: str = ""
+    # Which classifier routes this mailbox: v1 (rules + v1 LLM prompt) or v2 (action axis, classifier_v2).
+    classifier: Literal["v1", "v2"] = "v1"
 
     @field_validator("imap_search_criterion")
     @classmethod
@@ -316,6 +318,7 @@ class Settings(BaseSettings):
             "imap_system_folder": _get("imap_system_folder", self.imap_system_folder),
             "billing_payment_email": _get("billing_payment_email", self.imap_billing_payment_email),
             "routing_strategy": raw_mailbox.get("routing_strategy"),
+            "classifier": raw_mailbox.get("classifier") or "v1",
             "automated_sender_keep": _get("automated_sender_keep", self.automated_sender_keep),
         }
         if not merged["imap_host"]:

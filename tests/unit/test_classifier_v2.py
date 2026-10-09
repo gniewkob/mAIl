@@ -213,3 +213,12 @@ def test_payment_notice_needing_action_stays_billing_but_reply_is_human() -> Non
     gw = FakeGateway("do_zrobienia", "billing")
     assert classify_v2(_mail(subject="Opłać zaległość"), _mailbox(), _settings(), gw, _index()).category == "billing"
     assert classify_v2(_mail(subject="Re: faktura 12/2026"), _mailbox(), _settings(), gw, _index()).category == "question"
+
+
+def test_trusted_sender_marketing_is_newsletter_but_booking_is_not() -> None:
+    gw = FakeGateway("do_zrobienia", "appointment")
+    promo = _mail(sender="Booksy <hello@send.booksy.com>", subject="Widzimy się na Teneryfie?")
+    d = classify_v2(promo, _mailbox(), _settings(), gw, _index())
+    assert (d.category, d.source) == ("newsletter", "rule") and gw.calls == []
+    booking = _mail(sender="Anna <no-reply@booksy.com>", subject="Anna: nowa rezerwacja piątek, 2 października")
+    assert classify_v2(booking, _mailbox(), _settings(), gw, _index()).category == "appointment"

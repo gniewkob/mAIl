@@ -144,6 +144,22 @@ def is_booking(parsed: ParsedEmail, mailbox: MailboxConfig) -> bool:
     )
 
 
+MARKETING_SUBDOMAIN = re.compile(r"^(send|news|newsletter|mail|mailing|marketing|promo|info)\.", re.IGNORECASE)
+
+
+def is_trusted_marketing(parsed: ParsedEmail, mailbox: MailboxConfig) -> bool:
+    """Trusted senders (Booksy) also send marketing ("Widzimy się na Teneryfie?" from send.booksy.com,
+    shadow 2026-10-02 -> appointment). Not a booking + bulk or a marketing subdomain = newsletter."""
+    sender_domain = _domain(parsed.sender)
+    trusted = [t.strip().lower().lstrip("@") for t in (mailbox.automated_sender_keep or "").split(",") if t.strip()]
+    trusted = [t if "." in t else f"{t}.com" for t in trusted]
+    if not sender_domain or not any(sender_domain == t or sender_domain.endswith("." + t) for t in trusted):
+        return False
+    if is_booking(parsed, mailbox):
+        return False
+    return is_bulk(parsed) or bool(MARKETING_SUBDOMAIN.match(sender_domain))
+
+
 def is_mailbox_phishing(parsed: ParsedEmail, mailbox: MailboxConfig) -> bool:
     if not PHISHING_REGEX.search(parsed.subject or ""):
         return False
@@ -182,6 +198,8 @@ def classify_v2(parsed: ParsedEmail, mailbox: MailboxConfig, settings: Settings,
         return protected
     if is_mailbox_phishing(parsed, mailbox):
         return V2Decision("spam", "rule", "mailbox credential phishing from a foreign domain")
+    if is_trusted_marketing(parsed, mailbox):
+        return V2Decision("newsletter", "rule", "marketing from a trusted sender (not a booking)")
 
     bulk = is_bulk(parsed)
     rule = evaluate_rules(parsed, mailbox)
