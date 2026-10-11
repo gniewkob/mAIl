@@ -217,12 +217,14 @@ def classify_v2(parsed: ParsedEmail, mailbox: MailboxConfig, settings: Settings,
         return V2Decision("other", "llm_error", f"{type(exc).__name__}")
 
     # An offer the model still thinks needs action is ambiguous (a new customer writing "Termin"): let the
-    # action decide. Bulk offers go to newsletter, not spam: Junk is reported to the server's spam filter.
+    # action decide. The model alone never sends mail to Junk: Junk is the server's spam verdict and the
+    # input of the spam-report training (2026-10-09..11: AliExpress/IMDb/Rankomat landed in Junk and were
+    # reported to mydevil). Model "spam" means out of INBOX: Offer for pitches, Newsletter otherwise.
     if result.unsolicited_offer and not correspondent and result.action != "do_zrobienia":
-        return V2Decision("newsletter" if bulk else "spam", "llm_offer",
+        return V2Decision("newsletter" if bulk else "offer", "llm_offer",
                           "unsolicited offer from a sender the owner never wrote to", result.action, result.confidence)
     if result.action == "spam":
-        category = "spam"
+        category = "offer" if result.unsolicited_offer else "newsletter"
     elif result.action == "do_zrobienia" and result.category == "billing" \
             and PAYMENT_SUBJECT_REGEX.search(parsed.subject or "") \
             and not REPLY_PREFIX_REGEX.match(parsed.subject or ""):

@@ -50,3 +50,12 @@ def test_trusted_sender_is_never_reported() -> None:
     out = select_candidates([(uid, date, size, headers)], set(), now=NOW, min_age_hours=24, max_age_days=8,
                             max_bytes=1_000_000, limit=40, trusted_domains=("booksy.com",))
     assert out == []
+
+
+def test_model_tagged_junk_is_never_reported() -> None:
+    from mail_ai_agent.spam_report_cli import has_model_tag
+
+    assert has_model_tag('12 (UID 5 FLAGS (\\Seen $AI_spam) INTERNALDATE "x")', "$AI_")
+    assert not has_model_tag('12 (UID 5 FLAGS (\\Seen Junk) INTERNALDATE "x")', "$AI_")
+    assert not has_model_tag('12 (UID 5 FLAGS () INTERNALDATE "x")', "$AI_")
+    assert not has_model_tag('12 (UID 5 FLAGS ($AI_spam) INTERNALDATE "x")', "")

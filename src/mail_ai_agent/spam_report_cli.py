@@ -100,7 +100,15 @@ def select_candidates(
     return [(uid, key) for _, uid, key in out[:limit]]
 
 
-def _fetch_items(conn, folder: str) -> list[tuple[str, str, int, bytes]]:
+def has_model_tag(fetch_meta: str, prefix: str) -> bool:
+    """True when the FLAGS carry a mAIl keyword: mAIl itself filed it in Junk. Only mail the owner or
+    SpamSieve put in Junk is human judgement worth teaching the server (2026-10-11: model-filed
+    AliExpress/IMDb/Rankomat mail was reported as spam)."""
+    flags = re.search(r"FLAGS \(([^)]*)\)", fetch_meta)
+    return bool(prefix) and bool(flags) and any(f.startswith(prefix) for f in flags.group(1).split())
+
+
+def _fetch_items(conn, folder: str, skip_tag_prefix: str = "") -> list[tuple[str, str, int, bytes]]:
     status, _ = conn.select(folder, readonly=True)
     if status != "OK":
         return []
@@ -110,11 +118,13 @@ def _fetch_items(conn, folder: str) -> list[tuple[str, str, int, bytes]]:
     items: list[tuple[str, str, int, bytes]] = []
     for i in range(0, len(uids), 200):
         chunk = b",".join(uids[i:i + 200]).decode()
-        status, rows = conn.uid("fetch", chunk, "(UID INTERNALDATE RFC822.SIZE BODY.PEEK[HEADER])")
+        status, rows = conn.uid("fetch", chunk, "(UID FLAGS INTERNALDATE RFC822.SIZE BODY.PEEK[HEADER])")
         for part in rows or []:
             if not isinstance(part, tuple):
                 continue
             meta = part[0].decode(errors="replace")
+            if has_model_tag(meta, skip_tag_prefix):
+                continue
             uid = re.search(r"UID (\d+)", meta)
             date = re.search(r'INTERNALDATE "([^"]+)"', meta)
             size = re.search(r"RFC822\.SIZE (\d+)", meta)
@@ -175,7 +185,7 @@ def main() -> None:
         try:
             with IMAPClient(mb) as client:
                 conn = client.connection
-                items = _fetch_items(conn, mb.imap_spam_folder)
+                items = _fetch_items(conn, mb.imap_spam_folder, skip_tag_prefix=settings.imap_tag_prefix)
                 row["in_window"] = len(items)
                 chosen = select_candidates(
                     items, reported, now=now, min_age_hours=args.min_age_hours,

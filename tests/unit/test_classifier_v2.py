@@ -99,7 +99,9 @@ def test_action_maps_to_category() -> None:
                        FakeGateway("do_zrobienia", "billing"), ix).category == "question"
     assert classify_v2(_mail(), m, s, FakeGateway("do_zrobienia", "appointment"), ix).category == "appointment"
     assert classify_v2(_mail(), m, s, FakeGateway("informacja", "billing"), ix).category == "billing"
-    assert classify_v2(_mail(), m, s, FakeGateway("spam", "offer"), ix).category == "spam"
+    # model-only spam never goes to Junk (Junk feeds the server's spam training)
+    assert classify_v2(_mail(), m, s, FakeGateway("spam", "offer"), ix).category == "newsletter"
+    assert classify_v2(_mail(), m, s, FakeGateway("spam", "spam", offer=True), ix).category != "spam"
 
 
 def test_correspondent_is_never_noise_but_billing_stays() -> None:
@@ -175,10 +177,10 @@ def test_support_ticket_reply_is_protected() -> None:
     assert classify_v2(no_reply, _mailbox(), _settings(), gw, _index()).source != "protect"
 
 
-def test_unsolicited_offer_is_spam_unless_correspondent() -> None:
+def test_unsolicited_offer_is_offer_not_junk_unless_correspondent() -> None:
     gw = FakeGateway("spam", "offer", offer=True)
     d = classify_v2(_mail(subject="Re: Raport dla domeny"), _mailbox(), _settings(), gw, _index())
-    assert (d.category, d.source) == ("spam", "llm_offer")
+    assert (d.category, d.source) == ("offer", "llm_offer")
     known = classify_v2(_mail(), _mailbox(), _settings(), gw, _index(correspondents=["biuro@firma.pl"]))
     assert known.category == "question"  # correspondent floor
     bulk = _mail(headers={"list-unsubscribe": "<mailto:u@x>"})
