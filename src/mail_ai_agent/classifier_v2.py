@@ -15,7 +15,7 @@ import re
 from dataclasses import dataclass
 from email.utils import parseaddr
 
-from .automated_sender import HUMAN_CATEGORIES, is_bulk
+from .automated_sender import HUMAN_CATEGORIES, is_automated, is_bulk
 from .config import MailboxConfig, Settings
 from .llm_gateway import LLMGateway
 from .rule_engine import REPLY_PREFIX_REGEX, evaluate_rules
@@ -145,6 +145,16 @@ def is_booking(parsed: ParsedEmail, mailbox: MailboxConfig) -> bool:
 
 
 MARKETING_SUBDOMAIN = re.compile(r"^(send|news|newsletter|mail|mailing|marketing|promo|info)\.", re.IGNORECASE)
+# Mass-retail sending infrastructure (deals.aliexpress.com, notice.alibaba.com, ...). Used only to tell retail
+# marketing (owner files it as Newsletter) from a person's cold B2B pitch (Offer).
+RETAIL_SENDER_SUBDOMAIN = re.compile(
+    r"^(send|news|newsletter|mail|mailing|marketing|promo|info|deals?|notice|member|order|sales|service|email|em)\.",
+    re.IGNORECASE,
+)
+
+
+def is_retail_marketing(parsed: ParsedEmail) -> bool:
+    return is_bulk(parsed) or is_automated(parsed) or bool(RETAIL_SENDER_SUBDOMAIN.match(_domain(parsed.sender)))
 
 
 def is_trusted_marketing(parsed: ParsedEmail, mailbox: MailboxConfig) -> bool:
@@ -221,10 +231,11 @@ def classify_v2(parsed: ParsedEmail, mailbox: MailboxConfig, settings: Settings,
     # input of the spam-report training (2026-10-09..11: AliExpress/IMDb/Rankomat landed in Junk and were
     # reported to mydevil). Model "spam" means out of INBOX: Offer for pitches, Newsletter otherwise.
     if result.unsolicited_offer and not correspondent and result.action != "do_zrobienia":
-        return V2Decision("newsletter" if bulk else "offer", "llm_offer",
+        # retail marketing -> Newsletter (owner's taxonomy); a person's cold B2B pitch -> Offer
+        return V2Decision("newsletter" if is_retail_marketing(parsed) else "offer", "llm_offer",
                           "unsolicited offer from a sender the owner never wrote to", result.action, result.confidence)
     if result.action == "spam":
-        category = "offer" if result.unsolicited_offer else "newsletter"
+        category = "offer" if result.unsolicited_offer and not is_retail_marketing(parsed) else "newsletter"
     elif result.action == "do_zrobienia" and result.category == "billing" \
             and PAYMENT_SUBJECT_REGEX.search(parsed.subject or "") \
             and not REPLY_PREFIX_REGEX.match(parsed.subject or ""):

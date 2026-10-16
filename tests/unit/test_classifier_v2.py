@@ -224,3 +224,13 @@ def test_trusted_sender_marketing_is_newsletter_but_booking_is_not() -> None:
     assert (d.category, d.source) == ("newsletter", "rule") and gw.calls == []
     booking = _mail(sender="Anna <no-reply@booksy.com>", subject="Anna: nowa rezerwacja piątek, 2 października")
     assert classify_v2(booking, _mailbox(), _settings(), gw, _index()).category == "appointment"
+
+
+def test_retail_marketing_goes_to_newsletter_and_b2b_pitch_to_offer() -> None:
+    gw = FakeGateway("spam", "offer", offer=True)
+    retail = _mail(sender="AliExpress <ae-best-care-market17@deals.aliexpress.com>", subject="Kup 3+, cło opłacone")
+    assert classify_v2(retail, _mailbox(), _settings(), gw, _index()).category == "newsletter"
+    noreply = _mail(sender="Shop <no-reply@shop.example>", subject="Promocja")
+    assert classify_v2(noreply, _mailbox(), _settings(), gw, _index()).category == "newsletter"
+    pitch = _mail(sender="Jan Kowalski <jan.kowalski@seo-agencja.pl>", subject="Pozycjonowanie salon-bw.pl")
+    assert classify_v2(pitch, _mailbox(), _settings(), gw, _index()).category == "offer"
