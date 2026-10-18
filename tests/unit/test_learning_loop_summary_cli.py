@@ -7,6 +7,34 @@ import pytest
 from mail_ai_agent.learning_loop_summary_cli import build_summary, render_md
 
 
+def test_feedback_activity_distinguishes_recent_manual_and_automatic(tmp_path: Path) -> None:
+    import json
+    from datetime import datetime, timedelta, timezone
+    from mail_ai_agent.learning_loop_summary_cli import _feedback_activity
+
+    now = datetime.now(timezone.utc)
+    path = tmp_path / "feedback.jsonl"
+    rows = [
+        {"timestamp": now.isoformat(), "reason": "manual_review"},
+        {"timestamp": now.isoformat(), "reason": "autopilot_conflict_reclassification"},
+        {"timestamp": (now - timedelta(days=30)).isoformat(), "reason": "manual_review"},
+    ]
+    path.write_text("\n".join(json.dumps(row) for row in rows) + "\ninvalid\n")
+    result = _feedback_activity(path, now=now)
+    assert result["recent_7d"] == 2
+    assert result["manual_7d"] == 1
+    assert result["automatic_7d"] == 1
+    assert result["invalid_records"] == 1
+
+
+def test_feedback_activity_missing_log_has_no_evidence(tmp_path: Path) -> None:
+    from mail_ai_agent.learning_loop_summary_cli import _feedback_activity
+
+    result = _feedback_activity(tmp_path / "missing.jsonl")
+    assert result["manual_7d"] == 0
+    assert result["latest_at"] is None
+
+
 def test_build_summary_compares_current_vs_previous_7d(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     import mail_ai_agent.learning_loop_summary_cli as summary
 

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -12,6 +12,39 @@ from .quality_report import build_quality_payload, build_quality_payload_between
 
 def _utc_stamp() -> str:
     return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+
+
+def _feedback_activity(path: Path, *, now: datetime | None = None) -> dict[str, Any]:
+    now = now or datetime.now(timezone.utc)
+    cutoff = now - timedelta(days=7)
+    manual = automatic = invalid = 0
+    latest: datetime | None = None
+    if path.exists():
+        with path.open(encoding="utf-8") as stream:
+            for line in stream:
+                if not line.strip():
+                    continue
+                try:
+                    row = json.loads(line)
+                    stamp = datetime.fromisoformat(row["timestamp"].replace("Z", "+00:00"))
+                    if stamp.tzinfo is None or stamp > now:
+                        raise ValueError("Invalid feedback timestamp")
+                except (ValueError, KeyError, TypeError, AttributeError):
+                    invalid += 1
+                    continue
+                latest = max(latest, stamp) if latest else stamp
+                if stamp >= cutoff:
+                    if row.get("reason") == "autopilot_conflict_reclassification":
+                        automatic += 1
+                    else:
+                        manual += 1
+    return {
+        "latest_at": latest.isoformat() if latest else None,
+        "recent_7d": manual + automatic,
+        "manual_7d": manual,
+        "automatic_7d": automatic,
+        "invalid_records": invalid,
+    }
 
 
 def build_summary(*, state_db: Path, audit_log: Path, feedback_log: Path) -> dict[str, Any]:
@@ -32,6 +65,11 @@ def build_summary(*, state_db: Path, audit_log: Path, feedback_log: Path) -> dic
     feedback = learning.get("feedback_summary", {}) if isinstance(learning, dict) else {}
     wrong_rate = float(feedback.get("wrong_rate", 0.0) or 0.0)
     outcome_bad = float(feedback.get("outcome_bad_rate", 0.0) or 0.0)
+    activity = _feedback_activity(feedback_log)
+    if activity["manual_7d"] == 0:
+        recs.append("No manual feedback in the last 7 days; classification improvement is unverified. Review daily candidates.")
+    if activity["invalid_records"]:
+        recs.append("Invalid feedback records detected; verify feedback data before quality tuning.")
     if uncertain7 > uncertain_prev7:
         recs.append("Uncertain trend worsened in current 7d vs previous 7d; increase exploration review throughput.")
     if failed7 > failed_prev7:
@@ -55,6 +93,7 @@ def build_summary(*, state_db: Path, audit_log: Path, feedback_log: Path) -> dic
             "llm_share_14d": float(s14.get("llm_share", 0.0) or 0.0),
         },
         "feedback": {
+            **activity,
             "records": int(feedback.get("records", 0) or 0),
             "wrong_rate": wrong_rate,
             "outcome_bad_rate": outcome_bad,
@@ -74,6 +113,8 @@ def render_md(payload: dict[str, Any]) -> str:
         f"- Failed 7d/prev-7d: `{wc['failed_7d']}` / `{wc['failed_prev_7d']}`",
         f"- LLM share 7d/14d: `{wc['llm_share_7d']}` / `{wc['llm_share_14d']}`",
         f"- Feedback records: `{fb['records']}`",
+        f"- Recent manual/automatic feedback (7d): `{fb.get('manual_7d', 0)}` / `{fb.get('automatic_7d', 0)}`",
+        f"- Latest feedback: `{fb.get('latest_at')}`",
         f"- Wrong rate: `{fb['wrong_rate']}`",
         f"- Outcome bad rate: `{fb['outcome_bad_rate']}`",
         "",

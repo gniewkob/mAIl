@@ -8,6 +8,28 @@ from mail_ai_agent.config import MailboxConfig
 from mail_ai_agent.imap_client import IMAPClient, _parse_list_response
 
 
+def test_fetch_message_preview_is_bounded_and_readonly() -> None:
+    client = IMAPClient(MailboxConfig.model_construct(imap_max_retries=1))
+    selections = []
+    fetches = []
+
+    class Connection:
+        def select(self, folder, readonly=False):
+            selections.append((folder, readonly))
+            return "OK", []
+
+        def uid(self, *args):
+            fetches.append(args)
+            return "OK", [(b"BODY[]", b"Subject: Test\r\n\r\nText")]
+
+    client.connection = Connection()
+    assert client.fetch_message_preview_bytes("INBOX", "42").endswith(b"Text")
+    assert selections == [("INBOX", True)]
+    assert fetches == [("fetch", "42", "(BODY.PEEK[]<0.262144>)")]
+    with pytest.raises(ValueError):
+        client.fetch_message_preview_bytes("INBOX", "1:* ")
+
+
 class FakeFlakyConnection:
     def __init__(
         self,

@@ -290,6 +290,27 @@ class IMAPClient(AbstractContextManager["IMAPClient"]):
 
         return self._run_with_retry("fetch_candidates", _fetch)
 
+    def fetch_message_preview_bytes(self, folder: str, uid: str) -> bytes:
+        """Read a bounded message prefix without changing the Seen flag."""
+        if not uid.isascii() or not uid.isdigit():
+            raise ValueError("Invalid message UID")
+
+        def _fetch() -> bytes:
+            if self.connection is None:
+                raise RuntimeError("IMAP connection not established")
+            status, _ = self.connection.select(folder, readonly=True)
+            if status != "OK":
+                raise RuntimeError("Unable to select preview folder")
+            status, data = self.connection.uid("fetch", uid, "(BODY.PEEK[]<0.262144>)")
+            if status != "OK":
+                raise RuntimeError("Unable to fetch preview")
+            for item in data or []:
+                if isinstance(item, tuple) and len(item) > 1 and isinstance(item[1], bytes):
+                    return item[1][:262144]
+            raise RuntimeError("Preview message no longer exists")
+
+        return self._run_with_retry("fetch_message_preview_bytes", _fetch)
+
     def list_uids(self, folder: str) -> list[str]:
         def _list_uids() -> list[str]:
             if self.connection is None:
