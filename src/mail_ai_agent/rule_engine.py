@@ -17,6 +17,50 @@ BANK_DOCUMENT_REGEX = re.compile(
 )
 # A reply/forward is a conversation between people, never an automated bank document.
 REPLY_PREFIX_REGEX = re.compile(r"^\s*(re|odp|fw|fwd|pd|aw|wg)\s*:", flags=re.IGNORECASE)
+# Online shops that send daily marketing AND order/shipment mail from the same domains (owner, 2026-10-18:
+# "rozgraniczyć newslettery z ofertami od wiadomości o zakupie bądź dostawie"). Deterministic, before keyword
+# rules: promo subjects like "cło do zapłaty" otherwise hit PAYMENT_REGEX (Billing) or OFFER_REGEX (Offer).
+RETAIL_DOMAINS = ("aliexpress.com", "alibaba.com", "zalando.pl", "zalando.com", "zalando.de", "bestsecret.com")
+# Transactional sending addresses (local part or subdomain), e.g. transaction@notice.aliexpress.com
+RETAIL_TRANSACTIONAL_SENDER = re.compile(
+    r"(^|[.@_-])(transaction|transactions|orders?|buynotice|shipping|delivery|zamowieni\w*|bestellung\w*|"
+    r"service-mail|kundenservice)([.@_-]|$)",
+    re.IGNORECASE,
+)
+ORDER_SUBJECT_REGEX = re.compile(
+    r"(zam[oó]wieni\w*|order\b|paczk\w*|przesy[łl]k\w*|wysy[łl]k\w*|wys[łl]an\w*|dostarcz\w*|dor[eę]cz\w*|"
+    r"odbi[oó]r\w*|zwrot\w*|refund|shipped|delivered|tracking|odpraw\w* celn\w*|urz[eę]dzie celnym)",
+    re.IGNORECASE,
+)
+ORDER_NUMBER_REGEX = re.compile(r"\d{6,}")
+# Order/shipment mail that needs the owner: stays in INBOX
+ORDER_ACTION_REGEX = re.compile(
+    r"(oczekiwanie na potwierdzenie|potwierd[źz]|gotow\w* do odbioru|do odbioru|dokończ\w* p[łl]atno|"
+    r"p[łl]atno\w* (nie powiod|odrzucon|nieudan)|wymaga\w* (p[łl]atno|dzia[łl]ani|potwierdz)|"
+    r"zap[łl]a[ćc] za zam[oó]wienie|action required|payment failed)",
+    re.IGNORECASE,
+)
+
+
+def retail_decision(parsed_email: ParsedEmail) -> tuple[str, str] | None:
+    """(category, reason) for mail from a known online shop, else None."""
+    from email.utils import parseaddr
+
+    address = parseaddr(parsed_email.sender or "")[1].lower()
+    domain = address.rsplit("@", 1)[-1] if "@" in address else ""
+    if not any(domain == d or domain.endswith("." + d) for d in RETAIL_DOMAINS):
+        return None
+    subject = parsed_email.subject or ""
+    transactional = bool(RETAIL_TRANSACTIONAL_SENDER.search(address)) or bool(
+        ORDER_SUBJECT_REGEX.search(subject) and ORDER_NUMBER_REGEX.search(subject)
+    )
+    if not transactional:
+        return "newsletter", "retail shop marketing"
+    if ORDER_ACTION_REGEX.search(subject):
+        return "question", "retail order needs action"
+    return "orders", "retail order or shipment status"
+
+
 PAYMENT_REGEX = re.compile(
     r"\b("
     r"płatno(?:ść|ści|sci|scią|sci[aą])|"
@@ -123,6 +167,16 @@ def evaluate_rules(parsed_email: ParsedEmail, mailbox: MailboxConfig) -> RuleDec
             target_folder=category_to_folder("spam", mailbox),
             action="skip_ai",
             reason="SpamSieve header matched spam",
+        )
+
+    retail = retail_decision(parsed_email)
+    if retail is not None:
+        category, reason = retail
+        return RuleDecision(
+            category=category,
+            target_folder=category_to_folder(category, mailbox),
+            action="skip_ai",
+            reason=reason,
         )
 
     if BANK_DOCUMENT_REGEX.search(subject) and not REPLY_PREFIX_REGEX.match(subject):

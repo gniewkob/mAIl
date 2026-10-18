@@ -15,6 +15,7 @@ def category_to_folder(category: str, mailbox: MailboxConfig) -> str:
         "other": mailbox.imap_other_folder,
         "billing": mailbox.imap_billing_folder,
         "system": mailbox.imap_system_folder,
+        "orders": mailbox.imap_orders_folder,
     }
     return mapping.get(category, mailbox.imap_source_folder)
 
@@ -32,4 +33,5 @@ def target_folders(mailbox: MailboxConfig) -> list[str]:
         mailbox.imap_other_folder,
         mailbox.imap_billing_folder,
         mailbox.imap_system_folder,
+        mailbox.imap_orders_folder,
     ]

@@ -28,6 +28,9 @@ HARD_RULE_REASONS = {
     "SpamSieve header matched spam",
     "bank document matched in subject",
     "system pattern matched",
+    "retail shop marketing",
+    "retail order needs action",
+    "retail order or shipment status",
 }  # complaint regex is keyword-based: shop footers ("regulamin reklamacji") hit it, so the LLM decides
 BOOKING_REGEX = re.compile(
     r"(nowa rezerwacja|zmian\w* w rezerwacji|rezerwacja online|odwoła\w* (wizyt|rezerwacj)\w*|"

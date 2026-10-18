@@ -44,6 +44,7 @@ def _category_folders(mailbox: MailboxConfig) -> list[tuple[str, str]]:
         (mailbox.imap_other_folder, "other"),
         (mailbox.imap_billing_folder, "billing"),
         (mailbox.imap_system_folder, "system"),
+        (mailbox.imap_orders_folder, "orders"),
         (mailbox.imap_uncertain_folder, "uncertain"),
     ]
 

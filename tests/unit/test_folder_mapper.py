@@ -52,5 +52,6 @@ def test_target_folders_canonical_order(mock_mailbox: MailboxConfig) -> None:
         "INBOX.Other",
         "INBOX.Billing",
         "INBOX.System",
+        "INBOX.Zakupy",
     ]
     assert target_folders(mock_mailbox) == expected

@@ -222,6 +222,7 @@ def test_process_inbox_dry_run_does_not_persist_state_or_drafts(monkeypatch, tmp
                 "INBOX.Other",
                 "INBOX.Billing",
                 "INBOX.System",
+                "INBOX.Zakupy",
             ),
             True,
         )
