@@ -194,9 +194,26 @@ class IMAPClient(AbstractContextManager["IMAPClient"]):
             if folder not in folders:
                 self._folder_cache = (cached_at, [*folders, folder])
 
-    def ensure_folders_exist(self, folders: list[str]) -> None:
+    def subscribe_folder(self, folder: str) -> None:
+        """Best effort: unsubscribed folders are invisible in many mail clients, but routing still works."""
+        if self.connection is None or not hasattr(self.connection, "subscribe"):
+            return
+        try:
+            self.connection.subscribe(folder)
+        except Exception as exc:  # noqa: BLE001 - subscription is cosmetic, never fail the run
+            LOGGER.warning("Unable to subscribe folder %s: %s", folder, exc)
+
+    def ensure_folders_exist(self, folders: list[str], *, create_missing: bool = False) -> None:
         existing = set(self.list_folders())
         missing = [folder for folder in folders if folder not in existing]
+        if missing and create_missing:
+            # A target folder added to config (e.g. INBOX.Zakupy) must not stop the whole mailbox.
+            for folder in missing:
+                self.create_folder(folder)
+                self.subscribe_folder(folder)
+                LOGGER.warning("Created missing IMAP folder %s for mailbox %s", folder, self.mailbox.mailbox_id)
+            existing = set(self.list_folders(force_refresh=True))
+            missing = [folder for folder in folders if folder not in existing]
         if missing:
             missing_display = ", ".join(missing)
             raise RuntimeError(f"Missing IMAP folder(s): {missing_display}")
@@ -220,7 +237,7 @@ class IMAPClient(AbstractContextManager["IMAPClient"]):
     def validate_runtime_setup(self, *, source_folder: str, target_folders: list[str], dry_run: bool) -> None:
         self.ensure_folder_access(source_folder, readonly=dry_run)
         unique_targets = list(dict.fromkeys(target_folders))
-        self.ensure_folders_exist(unique_targets)
+        self.ensure_folders_exist(unique_targets, create_missing=not dry_run)
         if not dry_run and not (self.supports_uidplus() or self.mailbox.imap_allow_folder_expunge):
             raise RuntimeError(
                 "IMAP server does not advertise UIDPLUS and folder-level expunge is disabled. "
