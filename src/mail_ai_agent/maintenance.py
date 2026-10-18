@@ -147,10 +147,12 @@ def maintain_sqlite(db_path: Path) -> dict[str, str]:
         return {"status": "missing"}
 
     with closing(sqlite3.connect(db_path)) as conn, conn:
-        integrity = conn.execute("PRAGMA integrity_check").fetchone()[0]
+        integrity_rows = conn.execute("PRAGMA integrity_check").fetchall()
+        if integrity_rows != [("ok",)]:
+            raise sqlite3.DatabaseError("SQLite integrity check failed; maintenance aborted")
         conn.execute("PRAGMA wal_checkpoint(FULL)")
         conn.execute("VACUUM")
-    return {"status": "ok", "integrity_check": str(integrity)}
+    return {"status": "ok", "integrity_check": "ok"}
 
 
 def scrub_draft_pii(draft_dir: Path) -> DraftScrubResult:

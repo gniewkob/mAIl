@@ -115,6 +115,39 @@ def test_maintain_sqlite_runs_integrity_check(tmp_path: Path) -> None:
     assert maintenance["integrity_check"] == "ok"
 
 
+def test_maintain_sqlite_stops_when_integrity_check_fails(tmp_path: Path, monkeypatch) -> None:
+    from mail_ai_agent import maintenance
+
+    db_path = tmp_path / "state.sqlite"
+    db_path.touch()
+    statements = []
+
+    class Connection:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def execute(self, statement):
+            statements.append(statement)
+            return self
+
+        def fetchall(self):
+            return [("integrity failure",), ("second failure",)]
+
+        def fetchone(self):
+            return self.fetchall()[0]
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(maintenance.sqlite3, "connect", lambda path: Connection())
+    with pytest.raises(sqlite3.DatabaseError, match="integrity check failed"):
+        maintain_sqlite(db_path)
+    assert statements == ["PRAGMA integrity_check"]
+
+
 def test_scrub_state_pii_redacts_existing_rows(tmp_path: Path) -> None:
     db_path = tmp_path / "state.sqlite"
     manager = StateManager(db_path)
