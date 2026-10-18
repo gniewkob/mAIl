@@ -24,6 +24,8 @@ def _rule(sender: str, subject: str, body: str = ""):
     ("\"Lounge by Zalando\" <message@lounge.zalando.pl>", "Kup Jimmy Choo z Plus Exclusive"),
     ("\"BESTSECRET\" <noreply@fashionnews.bestsecret.com>", "Mid Season Sale: -65% + extra -20% oferta"),
     ("Alibaba <alisourcepro@service.alibaba.com>", "Source large orders using RFQ"),
+    ("Alibaba <noreply@order.alibaba.com>", "Ensure Quality: Procure with Verified Suppliers"),
+    ("Alibaba <noreply@buynotice.alibaba.com>", "Hi Mscigniew, your next sourcing find"),
 ])
 def test_shop_marketing_is_newsletter_even_with_payment_or_offer_words(sender, subject) -> None:
     rule = _rule(sender, subject, body="płatność oferta współpraca")

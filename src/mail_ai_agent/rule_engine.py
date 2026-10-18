@@ -21,12 +21,13 @@ REPLY_PREFIX_REGEX = re.compile(r"^\s*(re|odp|fw|fwd|pd|aw|wg)\s*:", flags=re.IG
 # "rozgraniczyć newslettery z ofertami od wiadomości o zakupie bądź dostawie"). Deterministic, before keyword
 # rules: promo subjects like "cło do zapłaty" otherwise hit PAYMENT_REGEX (Billing) or OFFER_REGEX (Offer).
 RETAIL_DOMAINS = ("aliexpress.com", "alibaba.com", "zalando.pl", "zalando.com", "zalando.de", "bestsecret.com")
-# Transactional sending addresses (local part or subdomain), e.g. transaction@notice.aliexpress.com
-RETAIL_TRANSACTIONAL_SENDER = re.compile(
-    r"(^|[.@_-])(transaction|transactions|orders?|buynotice|shipping|delivery|zamowieni\w*|bestellung\w*|"
-    r"service-mail|kundenservice)([.@_-]|$)",
+# Transactional sending addresses, judged on the LOCAL PART (transaction@notice.aliexpress.com):
+# subdomains are not reliable - Alibaba sends marketing from order.alibaba.com / buynotice.alibaba.com.
+RETAIL_TRANSACTIONAL_LOCALPART = re.compile(
+    r"^(transaction|transactions|orders?|order-?confirmation|shipping|delivery|zamowieni\w*|bestellung\w*)$",
     re.IGNORECASE,
 )
+RETAIL_TRANSACTIONAL_DOMAIN = re.compile(r"^(service-mail|transactional)\.", re.IGNORECASE)
 ORDER_SUBJECT_REGEX = re.compile(
     r"(zam[oó]wieni\w*|order\b|paczk\w*|przesy[łl]k\w*|wysy[łl]k\w*|wys[łl]an\w*|dostarcz\w*|dor[eę]cz\w*|"
     r"odbi[oó]r\w*|zwrot\w*|refund|shipped|delivered|tracking|odpraw\w* celn\w*|urz[eę]dzie celnym)",
@@ -51,7 +52,11 @@ def retail_decision(parsed_email: ParsedEmail) -> tuple[str, str] | None:
     if not any(domain == d or domain.endswith("." + d) for d in RETAIL_DOMAINS):
         return None
     subject = parsed_email.subject or ""
-    transactional = bool(RETAIL_TRANSACTIONAL_SENDER.search(address)) or bool(
+    local = address.split("@", 1)[0]
+    sender_transactional = bool(RETAIL_TRANSACTIONAL_LOCALPART.match(local)) or bool(
+        RETAIL_TRANSACTIONAL_DOMAIN.match(domain)
+    )
+    transactional = sender_transactional or bool(
         ORDER_SUBJECT_REGEX.search(subject) and ORDER_NUMBER_REGEX.search(subject)
     )
     if not transactional:
