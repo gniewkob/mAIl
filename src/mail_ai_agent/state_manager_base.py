@@ -8,7 +8,6 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from .constants import MOVE_CLEANUP_PENDING_ACTION
 from .schemas import EmailRecord, LeaseAcquireResult, WorkerLockResult
 
 if TYPE_CHECKING:

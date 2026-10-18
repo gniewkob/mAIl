@@ -6,10 +6,8 @@ while using the new pipeline architecture internally.
 
 from __future__ import annotations
 
-import hashlib
 import logging
 from dataclasses import dataclass
-from time import perf_counter
 from typing import TYPE_CHECKING
 
 from .constants import ActionTaken, WorkflowStatus
@@ -30,7 +28,6 @@ if TYPE_CHECKING:
     from .draft_store import DraftStore
     from .imap_client import IMAPClient
     from .llm_gateway import LLMGateway
-    from .schemas import EmailRecord, ParsedEmail
     from .state_manager import StateManager
 
 LOGGER = logging.getLogger(__name__)

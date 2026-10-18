@@ -7,7 +7,6 @@ from __future__ import annotations
 
 from typing import Protocol, runtime_checkable
 
-from ..constants import WorkflowStatus
 from ..schemas import EmailRecord, LeaseAcquireResult, WorkerLockResult
 
 

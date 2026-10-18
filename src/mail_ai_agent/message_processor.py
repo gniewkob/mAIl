@@ -167,7 +167,7 @@ class MessageProcessor:
         fingerprint: str,
     ) -> ProcessingResult:
         """Simulate processing without persisting state (dry_run mode)."""
-        from .decision_engine import decide_from_llm, decide_from_rule
+        from .decision_engine import decide_from_rule
         from .rule_engine import evaluate_rules
         
         try:
